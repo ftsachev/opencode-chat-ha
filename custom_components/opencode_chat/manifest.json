@@ -1,0 +1,14 @@
+{
+  "domain": "opencode_chat",
+  "name": "OpenCode Chat",
+  "after_dependencies": ["recorder", "trace"],
+  "codeowners": ["@ftsachev"],
+  "config_flow": true,
+  "dependencies": ["websocket_api", "frontend", "http", "lovelace"],
+  "documentation": "https://github.com/ftsachev/opencode-chat-ha",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/ftsachev/opencode-chat-ha/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
