@@ -3,12 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 from typing import Any, Callable, Awaitable
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 from .const import DEFAULT_MAX_TOKENS, MAX_TURNS_PER_REQUEST
 from .storage import Message, SessionStore
@@ -79,6 +78,9 @@ def _build_tool_descriptions() -> str:
     return "\n".join(lines)
 
 
+TOOL_DESCRIPTIONS = _build_tool_descriptions()
+
+
 def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
     """Parse !ACTION lines from LLM response text as tool calls."""
     PREFIX = "!ACTION "
@@ -127,7 +129,6 @@ class OpenCodeClient:
         self._default_model = model
         self._default_agent = agent
         self._tools = tools
-        self._tool_descriptions = _build_tool_descriptions()
         self._auth_header: dict[str, str] = {}
         if password:
             import base64
@@ -135,28 +136,54 @@ class OpenCodeClient:
             self._auth_header = {"Authorization": f"Basic {creds}"}
 
     def _request(
-        self, method: str, path: str, body: dict | None = None, timeout: int = 120
+        self, method: str, path: str, body: dict | None = None, timeout: int = 120,
+        retries: int = 2, retry_delay: float = 1.0,
     ) -> Any:
-        import urllib.request
-
         url = f"{self._url}{path}"
         data = json.dumps(body).encode() if body else None
-        req = urllib.request.Request(
-            url, data=data, method=method, headers=self._auth_header
-        )
-        if body:
-            req.add_header("Content-Type", "application/json")
-        try:
-            resp = urllib.request.urlopen(req, timeout=timeout)
-            raw = resp.read()
-            return json.loads(raw) if raw else {}
-        except HTTPError as e:
-            body_text = e.read().decode()
-            _LOGGER.error("OpenCode API error %s %s: %s", method, path, body_text)
-            raise
-        except json.JSONDecodeError:
-            _LOGGER.warning("Non-JSON response from %s %s", method, path)
-            return {}
+        last_error = None
+
+        for attempt in range(retries + 1):
+            req = urllib.request.Request(
+                url, data=data, method=method, headers=self._auth_header
+            )
+            if body:
+                req.add_header("Content-Type", "application/json")
+            try:
+                resp = urllib.request.urlopen(req, timeout=timeout)
+                raw = resp.read()
+                return json.loads(raw) if raw else {}
+            except HTTPError as e:
+                last_error = e
+                # Retry on 5xx (server errors) and 429 (rate limit), not on 4xx (client errors)
+                if e.code < 500 and e.code != 429:
+                    body_text = e.read().decode()
+                    _LOGGER.error("OpenCode API error %s %s: %s", method, path, body_text)
+                    raise
+                if attempt < retries:
+                    _LOGGER.warning(
+                        "OpenCode API %s %s returned %d, retrying in %.1fs (%d/%d)",
+                        method, path, e.code, retry_delay, attempt + 1, retries,
+                    )
+                    time.sleep(retry_delay)
+                    continue
+                body_text = e.read().decode()
+                _LOGGER.error("OpenCode API error %s %s: %s", method, path, body_text)
+                raise
+            except (URLError, OSError) as e:
+                last_error = e
+                if attempt < retries:
+                    _LOGGER.warning(
+                        "OpenCode API %s %s network error: %s, retrying in %.1fs (%d/%d)",
+                        method, path, e, retry_delay, attempt + 1, retries,
+                    )
+                    time.sleep(retry_delay)
+                    continue
+                raise
+            except json.JSONDecodeError:
+                _LOGGER.warning("Non-JSON response from %s %s", method, path)
+                return {}
+        raise last_error  # should not reach, but satisfies type checker
 
     def health(self) -> dict:
         return self._request("GET", "/api/health")
@@ -281,7 +308,7 @@ class OpenCodeClient:
 
         state_block = _session_state_block(self._tools.store, session_id)
         system_text = SYSTEM_PROMPT.format(
-            TOOL_DESCRIPTIONS=self._tool_descriptions
+            TOOL_DESCRIPTIONS=TOOL_DESCRIPTIONS
         )
         if state_block:
             system_text += f"\n\n[Session state]\n{state_block}\n"
@@ -416,11 +443,5 @@ def _history_to_text(history: list[Message]) -> list[dict[str, str]]:
 
 
 def _remove_tool_call_blocks(text: str) -> str:
-    text = re.sub(
-        r"```tool_call\n.*?\n```", "", text, flags=re.DOTALL
-    )
-    text = re.sub(
-        r"```json\n.*?\n```", "", text, flags=re.DOTALL
-    )
     lines = [l for l in text.split("\n") if not l.strip().startswith("!ACTION")]
     return "\n".join(lines).strip()

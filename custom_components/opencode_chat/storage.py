@@ -59,6 +59,7 @@ class SessionStore:
     def __init__(self, hass: HomeAssistant) -> None:
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._sessions: dict[str, Session] = {}
+        self._pending_index: dict[str, tuple[str, PendingChange]] = {}  # change_id -> (session_id, change)
         self._loaded = False
 
     async def async_load(self) -> None:
@@ -78,6 +79,8 @@ class SessionStore:
                 ],
             )
             self._sessions[session.id] = session
+            for change in session.pending_changes:
+                self._pending_index[change.id] = (session.id, change)
         self._loaded = True
 
     async def async_save(self) -> None:
@@ -155,17 +158,20 @@ class SessionStore:
     async def add_pending(self, session_id: str, change: PendingChange) -> None:
         session = self.get_or_raise(session_id)
         session.pending_changes.append(change)
+        self._pending_index[change.id] = (session_id, change)
         await self.async_save()
 
     async def remove_pending(
         self, session_id: str, change_id: str
     ) -> PendingChange | None:
-        session = self.get_or_raise(session_id)
-        for i, change in enumerate(session.pending_changes):
-            if change.id == change_id:
-                removed = session.pending_changes.pop(i)
-                await self.async_save()
-                return removed
+        indexed = self._pending_index.pop(change_id, None)
+        if indexed:
+            session = self.get_or_raise(session_id)
+            for i, change in enumerate(session.pending_changes):
+                if change.id == change_id:
+                    removed = session.pending_changes.pop(i)
+                    await self.async_save()
+                    return removed
         return None
 
     async def set_change_status(
@@ -180,21 +186,18 @@ class SessionStore:
         return None
 
     def list_pending(self) -> list[dict[str, Any]]:
-        all_pending = []
-        for session in self._sessions.values():
-            for change in session.pending_changes:
-                if change.status == "pending":
-                    all_pending.append(
-                        {
-                            "session_id": session.id,
-                            "change": {
-                                "id": change.id,
-                                "kind": change.kind,
-                                "summary": change.summary,
-                                "diff": change.diff,
-                                "payload": change.payload,
-                                "status": change.status,
-                            },
-                        }
-                    )
-        return all_pending
+        return [
+            {
+                "session_id": session_id,
+                "change": {
+                    "id": change.id,
+                    "kind": change.kind,
+                    "summary": change.summary,
+                    "diff": change.diff,
+                    "payload": change.payload,
+                    "status": change.status,
+                },
+            }
+            for session_id, change in self._pending_index.values()
+            if change.status == "pending"
+        ]
