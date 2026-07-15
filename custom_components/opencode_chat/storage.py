@@ -178,3 +178,23 @@ class SessionStore:
                 await self.async_save()
                 return change
         return None
+
+    def list_pending(self) -> list[dict[str, Any]]:
+        all_pending = []
+        for session in self._sessions.values():
+            for change in session.pending_changes:
+                if change.status == "pending":
+                    all_pending.append(
+                        {
+                            "session_id": session.id,
+                            "change": {
+                                "id": change.id,
+                                "kind": change.kind,
+                                "summary": change.summary,
+                                "diff": change.diff,
+                                "payload": change.payload,
+                                "status": change.status,
+                            },
+                        }
+                    )
+        return all_pending

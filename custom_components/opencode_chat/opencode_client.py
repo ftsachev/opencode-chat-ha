@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any, Callable, Awaitable
@@ -21,37 +22,27 @@ You help the user inspect their smart home, modify their Lovelace dashboards,
 and trigger services.
 
 Rules:
-- Inspect before you edit. Use list_dashboards / get_dashboard before \
-  proposing an update. Use list_entities / get_entity to discover the right \
-  entity_ids.
-- propose_dashboard_update, propose_service_call, propose_automation_create, \
-  propose_automation_update, and propose_automation_delete all STAGE changes \
-  for the user to review. They do NOT apply immediately.
-- If you propose a revised change for the SAME target, the older pending \
-  change is AUTOMATICALLY replaced.
-- For automations: use list_automations to find an automation_id, then \
-  get_automation to read the full config before propose_automation_update.
-- For debugging: list_automation_traces shows recent runs. \
-  get_automation_trace shows the full step-by-step. get_state_history \
-  shows entity state changes.
-- When proposing a dashboard change, use propose_dashboard_view_update. \
-  Call get_dashboard(summary=true) for view paths, then get_dashboard_view \
-  to fetch the view to modify.
+- Inspect before you edit.
+- propose_* actions STAGE changes for user review, they do NOT apply immediately.
 - Prefer minimal changes.
 - Be concise. Use markdown for tables and code blocks.
 
-AVAILABLE TOOLS:
+The following external actions are available. When you need to use one, put
+this EXACT format on its own line (no code block, no backticks):
+
+!ACTION {{"action": "name", "arguments": {{}}}}
+
+The system parses this line and executes the action. Do NOT wrap it in code
+fences — just put it inline on its own line. Wait for the result before
+continuing. You can request multiple actions in sequence.
+IMPORTANT: Once a tool has been called and returned a result, DO NOT call
+it again. Use the result you already received. If `truncated: true`,
+note there are more results but answer with what you have. For
+list_entities use the default limit (20) — the total count is always
+accurate regardless of limit. Avoid large limits.
+
+Available external actions:
 {TOOL_DESCRIPTIONS}
-
-When you need to use a tool, output it as a JSON code block with exactly \
-this format:
-
-```tool_call
-{{"name": "tool_name", "arguments": {{"arg1": "val1"}}}}
-```
-
-Then wait for the result. You can call multiple tools in sequence. \
-Each tool_call must be on its own line in its own code block.
 """
 
 TITLE_PROMPT = (
@@ -68,12 +59,19 @@ def _build_tool_descriptions() -> str:
         name = t["name"]
         desc = t["description"]
         props = t.get("input_schema", {}).get("properties", {})
+        required = t.get("input_schema", {}).get("required", [])
         params = []
         for pname, pinfo in props.items():
-            required = pname in t.get("input_schema", {}).get("required", [])
-            marker = "*" if required else ""
+            req_marker = "*" if pname in required else ""
             ptype = pinfo.get("type", "string")
-            params.append(f"  {marker}{pname} ({ptype})")
+            pdesc = pinfo.get("description", "")
+            default = pinfo.get("default")
+            parts = f"  {req_marker}{pname} ({ptype})"
+            if pdesc:
+                parts += f" — {pdesc}"
+            if default is not None:
+                parts += f" [default: {default}]"
+            params.append(parts)
         lines.append(f"- {name}: {desc}")
         if params:
             lines.extend(params)
@@ -82,28 +80,37 @@ def _build_tool_descriptions() -> str:
 
 
 def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
-    """Parse tool_call JSON code blocks from LLM response text."""
+    """Parse !ACTION lines from LLM response text as tool calls."""
+    PREFIX = "!ACTION "
     calls = []
-    lines = text.split("\n")
-    in_block = False
-    buffer = ""
-    for line in lines:
+    for line in text.split("\n"):
         stripped = line.strip()
-        if stripped.startswith("```tool_call"):
-            in_block = True
-            buffer = ""
-        elif in_block and stripped.startswith("```"):
-            in_block = False
+        if stripped.startswith(PREFIX):
             try:
-                parsed = json.loads(buffer)
-                if isinstance(parsed, dict) and "name" in parsed:
-                    calls.append(parsed)
+                parsed = json.loads(stripped[len(PREFIX):])
+                if isinstance(parsed, dict):
+                    name = parsed.get("name") or parsed.get("tool") or parsed.get("action")
+                    if name:
+                        args = parsed.get("arguments", parsed.get("args", {}))
+                        calls.append({"name": name, "arguments": args})
             except json.JSONDecodeError:
                 pass
-            buffer = ""
-        elif in_block:
-            buffer += line + "\n"
     return calls
+
+
+def _extract_text_from_assistant(messages: list) -> str | None:
+    for m in messages:
+        if m.get("type") == "assistant":
+            content = m.get("content", [])
+            texts = []
+            for part in content:
+                if part.get("type") == "text":
+                    t = part.get("text", "")
+                    if t.strip():
+                        texts.append(t)
+            if texts:
+                return "\n".join(texts)
+    return None
 
 
 class OpenCodeClient:
@@ -128,7 +135,7 @@ class OpenCodeClient:
             self._auth_header = {"Authorization": f"Basic {creds}"}
 
     def _request(
-        self, method: str, path: str, body: dict | None = None, timeout: int = 60
+        self, method: str, path: str, body: dict | None = None, timeout: int = 120
     ) -> Any:
         import urllib.request
 
@@ -141,50 +148,80 @@ class OpenCodeClient:
             req.add_header("Content-Type", "application/json")
         try:
             resp = urllib.request.urlopen(req, timeout=timeout)
-            return json.loads(resp.read())
+            raw = resp.read()
+            return json.loads(raw) if raw else {}
         except HTTPError as e:
             body_text = e.read().decode()
             _LOGGER.error("OpenCode API error %s %s: %s", method, path, body_text)
             raise
+        except json.JSONDecodeError:
+            _LOGGER.warning("Non-JSON response from %s %s", method, path)
+            return {}
 
     def health(self) -> dict:
-        return self._request("GET", "/global/health")
+        return self._request("GET", "/api/health")
 
     def create_session(self) -> dict:
-        return self._request("POST", "/session", {"title": "HA Chat"})
+        resp = self._request("POST", "/api/session", {"title": "HA Chat"})
+        if isinstance(resp, dict) and "data" in resp:
+            return resp["data"]
+        return resp
 
     def list_sessions(self) -> list:
-        return self._request("GET", "/session")
+        resp = self._request("GET", "/api/session")
+        if isinstance(resp, dict) and "data" in resp:
+            return resp["data"]
+        return resp if isinstance(resp, list) else []
 
     def delete_session(self, session_id: str) -> bool:
-        return self._request("DELETE", f"/session/{session_id}")
+        try:
+            self._request("DELETE", f"/api/session/{session_id}")
+            return True
+        except Exception:
+            return False
 
-    def send_message(
-        self,
-        session_id: str,
-        content: str,
-        system: str | None = None,
-        tools: list | None = None,
-        agent: str | None = None,
-        no_reply: bool = False,
-    ) -> dict:
-        body: dict[str, Any] = {
-            "parts": [{"type": "text", "text": content}],
-        }
-        if system:
-            body["system"] = system
-        if tools:
-            body["tools"] = tools
-        if agent:
-            body["agent"] = agent
-        if no_reply:
-            return self._request("POST", f"/session/{session_id}/prompt_async", body)
+    def send_prompt(self, session_id: str, text: str) -> dict:
         return self._request(
-            "POST", f"/session/{session_id}/message", body, timeout=120
+            "POST",
+            f"/api/session/{session_id}/prompt",
+            {"prompt": {"text": text}},
+            timeout=30,
         )
 
     def get_messages(self, session_id: str, limit: int = 50) -> list:
-        return self._request("GET", f"/session/{session_id}/message?limit={limit}")
+        resp = self._request(
+            "GET", f"/api/session/{session_id}/message?limit={limit}"
+        )
+        if isinstance(resp, dict) and "data" in resp:
+            return resp["data"]
+        return resp if isinstance(resp, list) else []
+
+    def _poll_final_response(
+        self, session_id: str, poll_interval: float = 1.0, max_wait: float = 120.0
+    ) -> dict | None:
+        """Poll until messages stabilize, then return the latest assistant message.
+        Waits for the AI to finish all tool executions before returning.
+        Messages are newest-first; latest assistant message is msgs[0] if type matches."""
+        deadline = time.monotonic() + max_wait
+        stable_for = 0.0
+        last_count = len(self.get_messages(session_id))
+
+        while time.monotonic() < deadline:
+            time.sleep(poll_interval)
+            msgs = self.get_messages(session_id)
+            cur = len(msgs)
+            if cur == last_count:
+                stable_for += poll_interval
+                # 3s stability: message count unchanged = AI done generating/executing
+                if stable_for >= 3.0:
+                    for m in msgs:
+                        if m.get("type") == "assistant":
+                            return m
+                    return None
+            else:
+                last_count = cur
+                stable_for = 0.0
+        return None
 
     async def summarize_title(self, user_text: str) -> str:
         """Quick call to title a chat session via a temp session."""
@@ -192,21 +229,25 @@ class OpenCodeClient:
             sess = await asyncio.get_event_loop().run_in_executor(
                 None, self.create_session
             )
-            sess_id = sess["id"]
-            resp = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.send_message(
-                    sess_id,
-                    f"{TITLE_PROMPT}\n\n{user_text[:500]}",
-                    system="You generate short chat titles. Respond with only the title, no quotes.",
-                    agent=self._default_agent or None,
-                ),
+            sess_id = sess.get("id") or sess.get("sessionID", "")
+            if not sess_id:
+                return ""
+
+            prompt_text = f"{TITLE_PROMPT}\n\n{user_text[:500]}"
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.send_prompt(sess_id, prompt_text)
             )
+
+            resp_msg = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._poll_final_response(sess_id, max_wait=30.0)
+            )
+
             title = ""
-            for part in resp.get("parts", []):
-                if part.get("type") == "text":
-                    title = part.get("text", "").strip().strip("\"'.,!?")[:60]
-                    break
+            if resp_msg:
+                text = _extract_text_from_assistant([resp_msg])
+                if text:
+                    title = text.strip().strip("\"'.,!?")[:60]
+
             await asyncio.get_event_loop().run_in_executor(
                 None, lambda: self.delete_session(sess_id)
             )
@@ -226,9 +267,9 @@ class OpenCodeClient:
     ) -> list[Message]:
         """Run a tool-use loop, using OpenCode as the LLM backend.
 
-        Returns the new messages appended (assistant turns + tool_result turns).
+        Uses the polling-based /prompt API. Returns the new messages
+        appended (assistant turns + tool_result turns).
         """
-        active_model = model or self._default_model
         active_agent = agent or self._default_agent
         new_messages: list[Message] = []
 
@@ -236,7 +277,7 @@ class OpenCodeClient:
             sess = await asyncio.get_event_loop().run_in_executor(
                 None, self.create_session
             )
-            opencode_sid = sess["id"]
+            opencode_sid = sess.get("id") or sess.get("sessionID", "")
 
         state_block = _session_state_block(self._tools.store, session_id)
         system_text = SYSTEM_PROMPT.format(
@@ -253,25 +294,24 @@ class OpenCodeClient:
                 full_prompt += f"{msg['role']}: {msg['content']}\n\n"
             full_prompt += "assistant:"
 
-            resp = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.send_message(
-                    opencode_sid,
-                    full_prompt,
-                    agent=active_agent or None,
-                ),
+            _LOGGER.debug("Sending prompt turn %d to session %s", turn, opencode_sid)
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self.send_prompt(opencode_sid, full_prompt)
             )
 
-            text_content = ""
-            tool_calls: list[dict] = []
-            for part in resp.get("parts", []):
-                if part.get("type") == "text":
-                    chunk = part.get("text", "")
-                    text_content += chunk
-                    await emit({"type": "text_delta", "text": chunk})
+            assistant_msg = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._poll_final_response(opencode_sid)
+            )
+
+            if not assistant_msg:
+                await emit({"type": "error", "error": "No response from AI"})
+                break
+
+            text_content = _extract_text_from_assistant([assistant_msg]) or ""
+            if text_content:
+                await emit({"type": "text_delta", "text": text_content})
 
             tool_calls = _parse_tool_calls(text_content)
-
             clean_text = _remove_tool_call_blocks(text_content)
             assistant_blocks: list[dict[str, Any]] = [
                 {"type": "text", "text": clean_text}
@@ -279,10 +319,10 @@ class OpenCodeClient:
 
             if not tool_calls:
                 await emit({"type": "turn_complete"})
-                assistant_msg = Message(
+                assistant_msg_obj = Message(
                     role="assistant", content=assistant_blocks
                 )
-                new_messages.append(assistant_msg)
+                new_messages.append(assistant_msg_obj)
                 break
 
             for tc in tool_calls:
@@ -316,21 +356,22 @@ class OpenCodeClient:
                         "input": tc.get("arguments", {}),
                     }
                 )
+                result_text = json.dumps(result, default=str)
+                clean_text += f"\n  [Called tool: {tc.get('name', '')} with args {json.dumps(tc.get('arguments', {}))}]"
                 api_messages.append(
                     {
                         "role": "assistant",
-                        "content": json.dumps(tc.get("arguments", {})),
-                    }
-                )
-                api_messages.append(
-                    {
-                        "role": "user",
-                        "content": json.dumps(result, default=str),
+                        "content": f"  [Tool result for {tc.get('name', '')}]: {result_text}",
                     }
                 )
 
-            assistant_msg = Message(role="assistant", content=assistant_blocks)
-            new_messages.append(assistant_msg)
+            api_messages.insert(
+                -len(tool_calls),
+                {"role": "assistant", "content": clean_text},
+            )
+
+            assistant_msg_obj = Message(role="assistant", content=assistant_blocks)
+            new_messages.append(assistant_msg_obj)
         else:
             await emit(
                 {
@@ -375,7 +416,11 @@ def _history_to_text(history: list[Message]) -> list[dict[str, str]]:
 
 
 def _remove_tool_call_blocks(text: str) -> str:
-    import re
-    return re.sub(
+    text = re.sub(
         r"```tool_call\n.*?\n```", "", text, flags=re.DOTALL
-    ).strip()
+    )
+    text = re.sub(
+        r"```json\n.*?\n```", "", text, flags=re.DOTALL
+    )
+    lines = [l for l in text.split("\n") if not l.strip().startswith("!ACTION")]
+    return "\n".join(lines).strip()

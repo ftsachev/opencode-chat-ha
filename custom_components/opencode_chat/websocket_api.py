@@ -6,6 +6,7 @@ import uuid
 from typing import Any
 
 import voluptuous as vol
+import yaml as yaml_lib
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
@@ -207,7 +208,7 @@ async def ws_chat(
 
     try:
         new_messages, opencode_sid = await client.stream_chat(
-            history=session.messages[:-1],
+            history=session.messages,
             session_id=session_id,
             emit=emit,
             opencode_sid=session.opencode_session_id,
@@ -267,24 +268,7 @@ async def ws_list_pending(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     store: SessionStore = _get_domain_data(hass).get("store")
-    all_pending = []
-    for session in store._sessions.values():
-        for change in session.pending_changes:
-            if change.status == "pending":
-                all_pending.append(
-                    {
-                        "session_id": session.id,
-                        "change": {
-                            "id": change.id,
-                            "kind": change.kind,
-                            "summary": change.summary,
-                            "diff": change.diff,
-                            "payload": change.payload,
-                            "status": change.status,
-                        },
-                    }
-                )
-    connection.send_result(msg["id"], all_pending)
+    connection.send_result(msg["id"], store.list_pending())
 
 
 @websocket_api.websocket_command(
@@ -415,7 +399,6 @@ async def _execute_change(
         # Ensure we have a valid automation ID
         auto_id = config.get("id")
         if not auto_id:
-            import yaml as yaml_lib
             auto_id = f"auto_{uuid.uuid4().hex[:8]}"
             config["id"] = auto_id
 

@@ -21,6 +21,22 @@ from .storage import PendingChange, SessionStore
 _LOGGER = logging.getLogger(__name__)
 
 
+def _validate_propose_config(config: Any, kind: str) -> None:
+    """Validate propose payload to prevent malformed data from LLM hallucinations."""
+    if not isinstance(config, dict):
+        raise ValueError(f"{kind}: config must be a dict, got {type(config).__name__}")
+    if kind == "automation_create":
+        if "alias" not in config and "trigger" not in config:
+            raise ValueError(
+                f"{kind}: config must contain at least 'alias' or 'trigger' key"
+            )
+    elif kind == "automation_update":
+        if "id" not in config and "alias" not in config:
+            raise ValueError(
+                f"{kind}: config should contain 'id' or 'alias' to identify the automation"
+            )
+
+
 def _target_key(change: PendingChange) -> str:
     p = change.payload or {}
     kind = change.kind
@@ -51,7 +67,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "area": {"type": "string", "description": "Area name filter"},
                 "label": {"type": "string", "description": "Filter by label (case-insensitive)"},
                 "search": {"type": "string", "description": "Keyword search"},
-                "limit": {"type": "integer", "default": 200},
+                "limit": {"type": "integer", "default": 20},
             },
         },
     },
@@ -362,7 +378,7 @@ class ToolRegistry:
         area_name = args.get("area")
         label = args.get("label")
         search = args.get("search")
-        limit = args.get("limit", 200)
+        limit = min(args.get("limit", 20), 100)
 
         registry = er.async_get(self._hass)
         area_reg = ar.async_get(self._hass)
@@ -383,6 +399,7 @@ class ToolRegistry:
             )
 
         matches = []
+        total_count = 0
         for entity in registry.entities.values():
             if domain and entity.domain != domain:
                 continue
@@ -392,6 +409,9 @@ class ToolRegistry:
                 continue
             name = (entity.name or entity.entity_id).lower()
             if search and search.lower() not in name and search.lower() not in entity.entity_id:
+                continue
+            total_count += 1
+            if len(matches) >= limit:
                 continue
             state_obj = self._hass.states.get(entity.entity_id)
             matches.append(
@@ -404,13 +424,12 @@ class ToolRegistry:
                     "labels": list(entity.labels or []),
                 }
             )
-            if len(matches) >= limit:
-                break
 
         return {
-            "total": len(matches),
+            "summary": f"{total_count} matching entities, showing {len(matches)} (limit {limit})",
+            "total": total_count,
             "entities": matches,
-            "truncated": len(matches) >= limit,
+            "truncated": total_count > limit,
         }
 
     async def _get_entity(self, args: dict, sid: str, tid: str) -> dict:
@@ -682,6 +701,11 @@ class ToolRegistry:
         new_config = args.get("new_config", {})
         summary = args.get("summary", "")
 
+        if not isinstance(new_config, dict):
+            raise ValueError("new_config must be a dict")
+        if "views" not in new_config:
+            raise ValueError("new_config must contain a 'views' key")
+
         diff = self._build_diff(
             json.dumps({}, indent=2),
             json.dumps(new_config, indent=2),
@@ -777,6 +801,8 @@ class ToolRegistry:
         config = args.get("config", {})
         summary = args.get("summary", "")
 
+        _validate_propose_config(config, "automation_create")
+
         change = PendingChange(
             id=uuid.uuid4().hex,
             kind="automation_create",
@@ -798,9 +824,13 @@ class ToolRegistry:
     async def _propose_automation_update(
         self, args: dict, sid: str, tid: str
     ) -> dict:
-        automation_id = args["automation_id"]
+        automation_id = args.get("automation_id", "")
         config = args.get("config", {})
         summary = args.get("summary", "")
+
+        if not automation_id:
+            raise ValueError("automation_id is required")
+        _validate_propose_config(config, "automation_update")
 
         diff = self._build_diff(
             json.dumps({}, indent=2),
