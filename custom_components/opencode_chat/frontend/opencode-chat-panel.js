@@ -93,6 +93,9 @@ class OpenCodeChatPanel extends HTMLElement {
         .scroll-btn.visible { display: flex; }
         .tool-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; background: rgba(0,0,0,0.05); margin-right: 4px; }
         .tool-result { font-size: 12px; color: var(--secondary-text-color); margin-top: 4px; }
+        .disconnect-banner { background: var(--error-color, #db4437); color: white; padding: 8px 16px; font-size: 13px; text-align: center; display: none; }
+        .disconnect-banner.visible { display: block; }
+        .disconnect-banner button { background: white; color: var(--error-color, #db4437); border: none; border-radius: 4px; padding: 2px 8px; cursor: pointer; margin-left: 8px; font-size: 12px; font-weight: 500; }
       </style>
       <div class="sidebar">
         <div class="sidebar-header">
@@ -102,6 +105,9 @@ class OpenCodeChatPanel extends HTMLElement {
         <div class="session-list" id="sessionList"></div>
       </div>
       <div class="main">
+        <div class="disconnect-banner" id="disconnectBanner">
+          Connection lost. <button id="reconnectBtn">Reconnect</button>
+        </div>
         <div class="chat-header">
           <span class="title" id="chatTitle">Select a session</span>
         </div>
@@ -132,6 +138,7 @@ class OpenCodeChatPanel extends HTMLElement {
     shadow.getElementById('newSessionBtn').addEventListener('click', () => this._createSession());
     shadow.getElementById('sendBtn').addEventListener('click', () => this._sendMessage());
     shadow.getElementById('scrollBtn').addEventListener('click', () => this._scrollToBottom());
+    shadow.getElementById('reconnectBtn').addEventListener('click', () => this._reconnect());
     const input = shadow.getElementById('chatInput');
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this._sendMessage(); }
@@ -146,6 +153,33 @@ class OpenCodeChatPanel extends HTMLElement {
       const dist = container.scrollHeight - container.clientHeight - container.scrollTop;
       btn.classList.toggle('visible', dist > 100);
     });
+    this._monitorConnection();
+  }
+
+  _monitorConnection() {
+    if (this._connectionCheckInterval) clearInterval(this._connectionCheckInterval);
+    this._connectionCheckInterval = setInterval(() => {
+      if (!this._hass?.connection?.connected) {
+        this._showDisconnectBanner();
+      } else {
+        this._hideDisconnectBanner();
+      }
+    }, 5000);
+  }
+
+  _showDisconnectBanner() {
+    this.shadowRoot.getElementById('disconnectBanner').classList.add('visible');
+  }
+
+  _hideDisconnectBanner() {
+    this.shadowRoot.getElementById('disconnectBanner').classList.remove('visible');
+  }
+
+  _reconnect() {
+    if (this._hass?.connection) {
+      this._hass.connection.reconnect();
+    }
+    this._hideDisconnectBanner();
   }
 
   _callWS(type, data = {}) {

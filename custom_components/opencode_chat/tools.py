@@ -356,8 +356,11 @@ class ToolRegistry:
         handler = self._handlers.get(name)
         if handler is None:
             return {"error": f"Unknown tool: {name}"}
+        _LOGGER.debug("Tool %s called (session=%s, id=%s)", name, session_id, tool_use_id)
         try:
-            return await handler(args, session_id, tool_use_id)
+            result = await handler(args, session_id, tool_use_id)
+            _LOGGER.debug("Tool %s completed (session=%s)", name, session_id)
+            return result
         except Exception as e:
             _LOGGER.exception("Tool %s failed", name)
             return {"error": str(e)}

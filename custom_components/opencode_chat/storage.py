@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from dataclasses import dataclass, asdict
@@ -61,6 +62,7 @@ class SessionStore:
         self._sessions: dict[str, Session] = {}
         self._pending_index: dict[str, tuple[str, PendingChange]] = {}  # change_id -> (session_id, change)
         self._loaded = False
+        self._lock = asyncio.Lock()
 
     async def async_load(self) -> None:
         if self._loaded:
@@ -127,63 +129,71 @@ class SessionStore:
         return session
 
     async def create(self, title: str = "New chat") -> Session:
-        session = Session(id=uuid.uuid4().hex, title=title)
-        self._sessions[session.id] = session
-        await self.async_save()
-        return session
+        async with self._lock:
+            session = Session(id=uuid.uuid4().hex, title=title)
+            self._sessions[session.id] = session
+            await self.async_save()
+            return session
 
     async def delete(self, session_id: str) -> None:
-        self._sessions.pop(session_id, None)
-        await self.async_save()
+        async with self._lock:
+            self._sessions.pop(session_id, None)
+            await self.async_save()
 
     async def rename(self, session_id: str, title: str) -> None:
-        session = self.get_or_raise(session_id)
-        session.title = title
-        session.updated_at = time.time()
-        await self.async_save()
+        async with self._lock:
+            session = self.get_or_raise(session_id)
+            session.title = title
+            session.updated_at = time.time()
+            await self.async_save()
 
     async def append_message(self, session_id: str, message: Message) -> None:
-        session = self.get_or_raise(session_id)
-        session.messages.append(message)
-        session.updated_at = time.time()
-        await self.async_save()
+        async with self._lock:
+            session = self.get_or_raise(session_id)
+            session.messages.append(message)
+            session.updated_at = time.time()
+            await self.async_save()
 
     async def set_opencode_session(
         self, session_id: str, opencode_session_id: str
     ) -> None:
-        session = self.get_or_raise(session_id)
-        session.opencode_session_id = opencode_session_id
-        await self.async_save()
+        async with self._lock:
+            session = self.get_or_raise(session_id)
+            session.opencode_session_id = opencode_session_id
+            await self.async_save()
 
     async def add_pending(self, session_id: str, change: PendingChange) -> None:
-        session = self.get_or_raise(session_id)
-        session.pending_changes.append(change)
-        self._pending_index[change.id] = (session_id, change)
-        await self.async_save()
+        async with self._lock:
+            session = self.get_or_raise(session_id)
+            session.pending_changes.append(change)
+            self._pending_index[change.id] = (session_id, change)
+            await self.async_save()
 
     async def remove_pending(
         self, session_id: str, change_id: str
     ) -> PendingChange | None:
-        indexed = self._pending_index.pop(change_id, None)
-        if indexed:
-            session = self.get_or_raise(session_id)
-            for i, change in enumerate(session.pending_changes):
-                if change.id == change_id:
-                    removed = session.pending_changes.pop(i)
-                    await self.async_save()
-                    return removed
-        return None
+        async with self._lock:
+            indexed = self._pending_index.pop(change_id, None)
+            if indexed:
+                session = self.get_or_raise(session_id)
+                for i, change in enumerate(session.pending_changes):
+                    if change.id == change_id:
+                        removed = session.pending_changes.pop(i)
+                        await self.async_save()
+                        return removed
+            return None
 
     async def set_change_status(
         self, session_id: str, change_id: str, status: str
     ) -> PendingChange | None:
-        session = self.get_or_raise(session_id)
-        for change in session.pending_changes:
-            if change.id == change_id:
-                change.status = status
-                await self.async_save()
-                return change
-        return None
+        async with self._lock:
+            session = self.get_or_raise(session_id)
+            for change in session.pending_changes:
+                if change.id == change_id:
+                    change.status = status
+                    await self.async_save()
+                    return change
+            return None
 
     def list_pending(self) -> list[dict[str, Any]]:
         return [
