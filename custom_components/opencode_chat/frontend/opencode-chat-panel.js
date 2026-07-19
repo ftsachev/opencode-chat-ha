@@ -24,10 +24,15 @@ class OpenCodeChatPanel extends HTMLElement {
   async _loadMarked() {
     if (window.marked) { this._markedReady = true; return; }
     try {
-      const resp = await fetch('/opencode_chat_static/marked.min.js');
-      const text = await resp.text();
-      eval(text);
-      this._markedReady = true;
+      const script = document.createElement('script');
+      script.src = '/opencode_chat_static/marked.min.js';
+      script.onload = () => { this._markedReady = true; };
+      script.onerror = () => { this._markedReady = false; };
+      document.head.appendChild(script);
+      await new Promise((resolve) => {
+        const check = () => { if (this._markedReady !== undefined) resolve(); else setTimeout(check, 50); };
+        check();
+      });
     } catch {
       this._markedReady = false;
     }

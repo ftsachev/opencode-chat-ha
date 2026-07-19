@@ -1,125 +1,96 @@
 # OpenCode Chat for Home Assistant
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-![HA](https://img.shields.io/badge/Home%20Assistant-2024.10+-blue)
-
-A sidebar chat panel for Home Assistant powered by [OpenCode](https://opencode.ai).
-Inspect entities, edit dashboards, and create automations in plain English — with
-**diff-and-approve gating** on every destructive action.
-
----
+A Home Assistant sidebar integration that connects to an [OpenCode](https://opencode.ai) server, giving you an AI chat panel with 20+ HA-aware tools for managing your smart home.
 
 ## Features
 
-- **Sidebar chat panel** — multi-session, persistent conversations, auto-titled
-- **Streaming responses** — markdown, code blocks, tables render live
-- **18 HA-integrated tools** — list entities, get dashboards, propose changes
-- **Diff-and-approve** — dashboard edits show a diff, service calls show the payload,
-  automations show the YAML. Nothing is applied without clicking **Apply**
-- **Config flow** — set server URL, password, optional model/agent override
-- **Single-instance** integration, HA 2024.10+
+- **Sidebar Chat Panel** — Chat with OpenCode directly from the HA sidebar
+- **20+ HA Tools** — List entities, control devices, create automations, manage dashboards
+- **Diff-and-Approve** — Destructive changes show a diff before applying
+- **Streaming Responses** — Real-time text streaming via WebSocket
+- **Session Management** — Create, rename, pin, and delete chat sessions
+- **Image Support** — Upload images to conversations
+- **Dark Mode** — Automatic HA theme integration
 
-## Architecture
+## Requirements
 
-Designed after [`claude_chat_for_homeassistant`](https://github.com/h0jeZvgoxFepBQ2C/claude_chat_for_homeassistant)
-but substitutes Anthropic's streaming SDK for OpenCode's `POST /session/:id/message`
-REST endpoint.
-
-```
-HA frontend (Lit)  ←WebSocket→  HA backend (Python)  ←HTTP→  OpenCode server
-                                    │
-                                    ├─ ToolRegistry (18 tools)
-                                    ├─ SessionStore (persistent)
-                                    └─ Diff/Approve (pending changes)
-```
-
-## Prerequisites
-
-1. **OpenCode CLI** — `npm install -g @opencode-ai/cli` or download from
-   [opencode.ai](https://opencode.ai)
-2. **OpenCode server** running on a machine reachable from HA: `opencode serve`
-3. **Home Assistant** 2024.10 or later
+- Home Assistant 2024.1.0 or newer
+- An [OpenCode](https://opencode.ai) server running and accessible from your HA instance
 
 ## Installation
 
-### HACS (recommended)
+### HACS (Recommended)
 
-1. Add this repo as a custom repository:
-   HACS → Integrations → ⋮ → Custom repositories →
-   `https://github.com/ftsachev/opencode-chat-ha` → category **Integration**
-2. Click **Install**
-3. Restart Home Assistant
-4. **Settings → Devices & Services → Add Integration → OpenCode Chat**
-5. Enter your OpenCode server URL and password
+1. Open HACS in Home Assistant
+2. Go to **Integrations** → **Custom Repositories**
+3. Add this repository URL: `https://github.com/ftsachev/opencode-chat-ha`
+4. Select **Integration** as the category
+5. Click **Install**
+6. Restart Home Assistant
 
 ### Manual
 
-Copy `custom_components/opencode_chat/` to your HA `config/custom_components/`
-directory, restart HA, then add the integration via the UI.
+1. Download the latest release from [GitHub](https://github.com/ftsachev/opencode-chat-ha/releases)
+2. Extract `custom_components/opencode_chat/` to your HA config directory
+3. Restart Home Assistant
 
-## Setting up OpenCode
+## Configuration
 
-```bash
-# Start the server (no auth — use only on localhost)
-opencode serve --port 4096
+1. Go to **Settings** → **Devices & Services** → **Add Integration**
+2. Search for **OpenCode Chat**
+3. Enter your OpenCode server details:
+   - **URL**: Your OpenCode server URL (e.g., `http://192.168.1.100:4096`)
+   - **Password**: Your OpenCode server password
+4. Optionally configure:
+   - **Model ID**: Override the default model
+   - **Agent Name**: Override the default agent
+5. Click **Submit**
 
-# Or with a password
-OPENCODE_SERVER_PASSWORD=your-password opencode serve --port 4096 --hostname 0.0.0.0
-```
+## Usage
 
-If OpenCode is on a different machine, make sure HA can reach it on the network
-and set the URL accordingly in the config flow.
+After setup, a new **OpenCode Chat** panel appears in your sidebar. Click it to open the chat interface.
 
-## Tools available to OpenCode
+### Available Tools
+
+The integration provides 20+ tools for managing your home:
 
 | Tool | Description |
 |------|-------------|
-| `list_entities` | List all entities with state and attributes |
-| `get_entity` | Get detailed state of a specific entity |
-| `list_areas` | List all areas |
-| `list_dashboards` | List all dashboards |
-| `get_dashboard` | Get full dashboard JSON |
-| `list_lovelace_resources` | List Lovelace dashboard resources |
-| `list_automations` | List all automations |
-| `get_automation` | Get full automation config |
-| `list_services` | List all available services |
-| `list_automation_traces` | List recent automation traces |
-| `get_automation_trace` | Get trace details |
-| `get_state_history` | Get state history for an entity |
-| `propose_dashboard_view_update` | Propose a dashboard view change (requires approval) |
-| `propose_service_call` | Propose a service call (requires approval) |
-| `propose_automation_create` | Propose creating an automation (requires approval) |
-| `propose_automation_update` | Propose updating an automation (requires approval) |
-| `propose_automation_delete` | Propose deleting an automation (requires approval) |
-| `get_server_info` | Get HA server info and config |
+| `list_entities` | List and filter HA entities |
+| `get_entity` | Get entity details and state |
+| `call_service` | Call any HA service |
+| `create_automation` | Create new automations |
+| `update_automation` | Update existing automations |
+| `delete_automation` | Delete automations |
+| `update_dashboard` | Update dashboard configurations |
+| `update_dashboard_view` | Update specific dashboard views |
+| `upload_image` | Upload images to conversations |
 
-## Limitations
+### Session Management
 
-- YAML-mode dashboards are read-only (only storage-mode dashboards can be edited)
-- Automations require `automation: !include automations.yaml` in `configuration.yaml`
-- Single integration instance only
-- Image attachment support (upload via chat UI)
+- **New Chat**: Click the **+ New** button in the sidebar
+- **Pin Session**: Click the pin icon to keep important sessions at the top
+- **Delete Session**: Click the **✕** button to remove a session
+- **Clear All**: Click **Clear All** to remove all sessions
+
+## Security
+
+- Admin access required for panel access
+- Passwords stored in HA's encrypted config entry storage
+- Session IDs validated to prevent path traversal
+- Input validation on all tool parameters
 
 ## Development
 
-The integration lives at `custom_components/opencode_chat/`:
+```bash
+# Clone the repository
+git clone https://github.com/ftsachev/opencode-chat-ha.git
 
-```
-custom_components/opencode_chat/
-├── __init__.py          # Panel registration, asset serving
-├── config_flow.py       # Config flow + options flow
-├── const.py             # Constants
-├── opencode_client.py   # OpenCode API client + tool-loop
-├── tools.py             # 18 HA tool definitions + ToolRegistry
-├── websocket_api.py     # 10 WebSocket commands
-├── storage.py           # Session store (persistent)
-├── media.py             # Image attachment handling
-├── services.yaml        # send_message service
-├── translations/        # i18n (en)
-└── frontend/
-    └── opencode-chat-panel.js  # Lit-element sidebar panel
+# Run tests
+cd opencode-chat-ha
+python -m pytest tests/
 ```
 
 ## License
 
-MIT
+MIT License. See [LICENSE](LICENSE) for details.

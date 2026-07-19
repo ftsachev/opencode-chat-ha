@@ -29,6 +29,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_create_session)
     websocket_api.async_register_command(hass, ws_delete_session)
     websocket_api.async_register_command(hass, ws_rename_session)
+    websocket_api.async_register_command(hass, ws_toggle_pin_session)
     websocket_api.async_register_command(hass, ws_get_session)
     websocket_api.async_register_command(hass, ws_chat)
     websocket_api.async_register_command(hass, ws_upload_image)
@@ -101,6 +102,21 @@ async def ws_rename_session(
     session_id = msg["session_id"]
     await store.rename(session_id, msg["title"])
     connection.send_result(msg["id"], True)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "opencode_chat/toggle_pin_session",
+        vol.Required("session_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_toggle_pin_session(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    store: SessionStore = _get_domain_data(hass).get("store")
+    pinned = await store.toggle_pin(msg["session_id"])
+    connection.send_result(msg["id"], {"pinned": pinned})
 
 
 @websocket_api.websocket_command(

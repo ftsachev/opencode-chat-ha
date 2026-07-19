@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import shutil
 import uuid
 from typing import Any
@@ -20,6 +21,7 @@ ALLOWED_TYPES = {
     "image/gif": "gif",
     "image/webp": "webp",
 }
+_SESSION_ID_RE = re.compile(r"^[0-9a-f]+$")
 
 
 def media_root(hass: HomeAssistant) -> str:
@@ -27,6 +29,8 @@ def media_root(hass: HomeAssistant) -> str:
 
 
 def session_dir(hass: HomeAssistant, session_id: str) -> str:
+    if not _SESSION_ID_RE.match(session_id):
+        raise ValueError(f"Invalid session_id format: {session_id}")
     return os.path.join(media_root(hass), session_id)
 
 

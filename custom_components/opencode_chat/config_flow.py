@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import json
 from typing import Any
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
@@ -39,20 +43,16 @@ class OpenCodeChatConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                import urllib.request
-                import json
-
                 url = user_input[CONF_URL].rstrip("/")
                 password = user_input.get(CONF_PASSWORD, "")
-                req = urllib.request.Request(f"{url}/api/health")
+                req = Request(f"{url}/api/health")
                 if password:
-                    import base64
                     creds = base64.b64encode(
                         f"opencode:{password}".encode()
                     ).decode()
                     req.add_header("Authorization", f"Basic {creds}")
                 resp = await self.hass.async_add_executor_job(
-                    lambda: urllib.request.urlopen(req, timeout=5)
+                    lambda: urlopen(req, timeout=5)
                 )
                 data = json.loads(resp.read())
                 if not data.get("healthy"):
@@ -69,7 +69,7 @@ class OpenCodeChatConfigFlow(ConfigFlow, domain=DOMAIN):
                             CONF_AGENT: user_input.get(CONF_AGENT, DEFAULT_AGENT),
                         },
                     )
-            except urllib.error.HTTPError as e:
+            except HTTPError as e:
                 if e.code == 401:
                     errors["base"] = "invalid_auth"
                 else:
@@ -88,9 +88,6 @@ class OpenCodeChatConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class OpenCodeChatOptionsFlow(OptionsFlow):
-    def __init__(self, config_entry) -> None:
-        self.config_entry = config_entry
-
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:

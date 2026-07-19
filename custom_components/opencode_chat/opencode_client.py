@@ -144,13 +144,13 @@ class OpenCodeClient:
         last_error = None
 
         for attempt in range(retries + 1):
-            req = urllib.request.Request(
+            req = Request(
                 url, data=data, method=method, headers=self._auth_header
             )
             if body:
                 req.add_header("Content-Type", "application/json")
             try:
-                resp = urllib.request.urlopen(req, timeout=timeout)
+                resp = urlopen(req, timeout=timeout)
                 raw = resp.read()
                 return json.loads(raw) if raw else {}
             except HTTPError as e:

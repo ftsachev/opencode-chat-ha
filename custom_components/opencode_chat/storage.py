@@ -40,6 +40,7 @@ class Session:
     title: str
     created_at: float = 0.0
     updated_at: float = 0.0
+    pinned: bool = False
     messages: list[Message] = None
     pending_changes: list[PendingChange] = None
     opencode_session_id: str | None = None
@@ -74,6 +75,7 @@ class SessionStore:
                 title=raw["title"],
                 created_at=raw.get("created_at", time.time()),
                 updated_at=raw.get("updated_at", time.time()),
+                pinned=raw.get("pinned", False),
                 opencode_session_id=raw.get("opencode_session_id"),
                 messages=[Message(**m) for m in raw.get("messages", [])],
                 pending_changes=[
@@ -94,6 +96,7 @@ class SessionStore:
                         "title": s.title,
                         "created_at": s.created_at,
                         "updated_at": s.updated_at,
+                        "pinned": s.pinned,
                         "opencode_session_id": s.opencode_session_id,
                         "messages": [asdict(m) for m in s.messages],
                         "pending_changes": [asdict(p) for p in s.pending_changes],
@@ -105,7 +108,8 @@ class SessionStore:
 
     def list_sessions(self) -> list[dict[str, Any]]:
         sessions = sorted(
-            self._sessions.values(), key=lambda s: s.updated_at, reverse=True
+            self._sessions.values(),
+            key=lambda s: (not s.pinned, -s.updated_at),
         )
         return [
             {
@@ -113,6 +117,7 @@ class SessionStore:
                 "title": s.title,
                 "created_at": s.created_at,
                 "updated_at": s.updated_at,
+                "pinned": s.pinned,
                 "message_count": len(s.messages),
                 "has_pending": any(c.status == "pending" for c in s.pending_changes),
             }
@@ -146,6 +151,13 @@ class SessionStore:
             session.title = title
             session.updated_at = time.time()
             await self.async_save()
+
+    async def toggle_pin(self, session_id: str) -> bool:
+        async with self._lock:
+            session = self.get_or_raise(session_id)
+            session.pinned = not session.pinned
+            await self.async_save()
+            return session.pinned
 
     async def append_message(self, session_id: str, message: Message) -> None:
         async with self._lock:
