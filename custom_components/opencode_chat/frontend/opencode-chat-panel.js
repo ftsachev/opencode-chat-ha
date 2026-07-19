@@ -96,11 +96,16 @@ class OpenCodeChatPanel extends HTMLElement {
         .disconnect-banner { background: var(--error-color, #db4437); color: white; padding: 8px 16px; font-size: 13px; text-align: center; display: none; }
         .disconnect-banner.visible { display: block; }
         .disconnect-banner button { background: white; color: var(--error-color, #db4437); border: none; border-radius: 4px; padding: 2px 8px; cursor: pointer; margin-left: 8px; font-size: 12px; font-weight: 500; }
+        .clear-all-btn { background: none; border: 1px solid var(--error-color, #db4437); color: var(--error-color, #db4437); border-radius: 4px; padding: 2px 6px; cursor: pointer; font-size: 11px; font-weight: 500; opacity: 0.7; }
+        .clear-all-btn:hover { opacity: 1; background: var(--error-color, #db4437); color: white; }
       </style>
       <div class="sidebar">
         <div class="sidebar-header">
           <span>OpenCode Chat</span>
-          <button id="newSessionBtn">+ New</button>
+          <div>
+            <button id="clearAllBtn" class="clear-all-btn">Clear All</button>
+            <button id="newSessionBtn">+ New</button>
+          </div>
         </div>
         <div class="session-list" id="sessionList"></div>
       </div>
@@ -136,6 +141,7 @@ class OpenCodeChatPanel extends HTMLElement {
   _bindEvents() {
     const shadow = this.shadowRoot;
     shadow.getElementById('newSessionBtn').addEventListener('click', () => this._createSession());
+    shadow.getElementById('clearAllBtn').addEventListener('click', () => this._clearAllSessions());
     shadow.getElementById('sendBtn').addEventListener('click', () => this._sendMessage());
     shadow.getElementById('scrollBtn').addEventListener('click', () => this._scrollToBottom());
     shadow.getElementById('reconnectBtn').addEventListener('click', () => this._reconnect());
@@ -229,6 +235,18 @@ class OpenCodeChatPanel extends HTMLElement {
         }
       }
     } catch (e) { console.error('Failed to delete session', e); }
+  }
+
+  async _clearAllSessions() {
+    if (!confirm('Delete all chat sessions?')) return;
+    for (const s of [...this._sessions]) {
+      try { await this._callWS('delete_session', { session_id: s.id }); } catch (_) {}
+    }
+    this._sessions = [];
+    this._sessionData = {};
+    this._activeSessionId = null;
+    this._renderSessionList();
+    this._showEmpty();
   }
 
   async _selectSession(sessionId) {
