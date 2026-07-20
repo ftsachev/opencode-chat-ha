@@ -412,102 +412,8 @@ async def _execute_change(
 
         return {"applied": True, "url_path": url_path}
 
-    if kind == "automation_create":
-        config = payload.get("config", {})
-        automations_path = hass.config.path("automations.yaml")
-
-        def _read_automations() -> list:
-            try:
-                with open(automations_path) as f:
-                    existing = yaml_lib.safe_load(f) or []
-            except (FileNotFoundError, yaml_lib.YAMLError):
-                existing = []
-            if not isinstance(existing, list):
-                existing = [existing] if existing else []
-            return existing
-
-        existing = await hass.async_add_executor_job(_read_automations)
-
-        # Ensure we have a valid automation ID
-        auto_id = config.get("id")
-        if not auto_id:
-            auto_id = f"auto_{uuid.uuid4().hex[:8]}"
-            config["id"] = auto_id
-
-        existing.append(config)
-
-        def _write_automations(data: list) -> None:
-            with open(automations_path, "w") as f:
-                yaml_lib.dump(data, f, default_flow_style=False)
-
-        await hass.async_add_executor_job(_write_automations, existing)
-        await hass.services.async_call("automation", "reload", {}, blocking=True)
-        return {"applied": True, "automation_id": auto_id}
-
-    if kind == "automation_update":
-        automation_id = payload.get("automation_id", "")
-        config = payload.get("config", {})
-        automations_path = hass.config.path("automations.yaml")
-
-        def _read_and_update() -> tuple[list, str]:
-            try:
-                with open(automations_path) as f:
-                    existing = yaml_lib.safe_load(f) or []
-            except (FileNotFoundError, yaml_lib.YAMLError):
-                existing = []
-            if not isinstance(existing, list):
-                existing = [existing] if existing else []
-
-            entity_id = f"automation.{automation_id}" if not automation_id.startswith("automation.") else automation_id
-            for i, auto in enumerate(existing):
-                if isinstance(auto, dict) and (
-                    auto.get("id") == automation_id
-                    or auto.get("alias") == automation_id
-                ):
-                    existing[i] = {**auto, **config}
-                    break
-            else:
-                existing.append(config)
-
-            with open(automations_path, "w") as f:
-                yaml_lib.dump(existing, f, default_flow_style=False)
-
-            return existing, entity_id
-
-        _, entity_id = await hass.async_add_executor_job(_read_and_update)
-        await hass.services.async_call("automation", "reload", {}, blocking=True)
-        return {"applied": True, "automation_id": automation_id}
-
-    if kind == "automation_delete":
-        automation_id = payload.get("automation_id", "")
-        automations_path = hass.config.path("automations.yaml")
-
-        def _read_and_delete() -> list:
-            try:
-                with open(automations_path) as f:
-                    existing = yaml_lib.safe_load(f) or []
-            except (FileNotFoundError, yaml_lib.YAMLError):
-                existing = []
-            if not isinstance(existing, list):
-                existing = [existing] if existing else []
-
-            remaining = [
-                a
-                for a in existing
-                if not (
-                    a.get("id") == automation_id
-                    or a.get("alias") == automation_id
-                )
-            ]
-
-            with open(automations_path, "w") as f:
-                yaml_lib.dump(remaining, f, default_flow_style=False)
-
-            return remaining
-
-        await hass.async_add_executor_job(_read_and_delete)
-        await hass.services.async_call("automation", "reload", {}, blocking=True)
-        return {"applied": True, "automation_id": automation_id}
+    if kind in ("automation_create", "automation_update", "automation_delete"):
+        return await _safe_automation_change(hass, kind, payload)
 
     if kind == "service_call":
         domain = payload.get("domain")
@@ -524,3 +430,106 @@ async def _execute_change(
         return {"applied": True, "service": f"{domain}.{service}"}
 
     raise ValueError(f"Unknown change kind: {kind}")
+
+
+async def _safe_automation_change(
+    hass: HomeAssistant, kind: str, payload: dict
+) -> dict:
+    """Safe-apply pipeline for automation changes with backup, validation, and rollback."""
+    automations_path = hass.config.path("automations.yaml")
+    backup_path = automations_path + ".bak"
+
+    def _read_automations() -> tuple[list, int]:
+        try:
+            with open(automations_path) as f:
+                existing = yaml_lib.safe_load(f) or []
+        except (FileNotFoundError, yaml_lib.YAMLError):
+            existing = []
+        if not isinstance(existing, list):
+            existing = [existing] if existing else []
+        return existing, len(existing)
+
+    existing, original_count = await hass.async_add_executor_job(_read_automations)
+
+    # Apply the change
+    if kind == "automation_create":
+        config = payload.get("config", {})
+        auto_id = config.get("id")
+        if not auto_id:
+            auto_id = f"auto_{uuid.uuid4().hex[:8]}"
+            config["id"] = auto_id
+        existing.append(config)
+    elif kind == "automation_update":
+        automation_id = payload.get("automation_id", "")
+        config = payload.get("config", {})
+        for i, auto in enumerate(existing):
+            if isinstance(auto, dict) and (
+                auto.get("id") == automation_id
+                or auto.get("alias") == automation_id
+            ):
+                existing[i] = {**auto, **config}
+                break
+        else:
+            existing.append(config)
+    elif kind == "automation_delete":
+        automation_id = payload.get("automation_id", "")
+        existing = [
+            a for a in existing
+            if not (a.get("id") == automation_id or a.get("alias") == automation_id)
+        ]
+
+    new_count = len(existing)
+
+    # Content-protection guard: refuse if count drops significantly
+    if new_count < original_count and (original_count - new_count) > 1:
+        raise ValueError(
+            f"Refusing to write: would remove {original_count - new_count} "
+            f"automations ({original_count} -> {new_count}). "
+            "Delete automations one at a time."
+        )
+
+    # Backup, write, validate
+    def _write_with_backup() -> None:
+        # Create backup
+        try:
+            with open(automations_path, "rb") as src:
+                with open(backup_path, "wb") as dst:
+                    dst.write(src.read())
+        except FileNotFoundError:
+            pass
+        # Write new content
+        with open(automations_path, "w") as f:
+            yaml_lib.dump(existing, f, default_flow_style=False)
+
+    await hass.async_add_executor_job(_write_with_backup)
+
+    # Validate via HA's config checker
+    try:
+        from homeassistant.helpers.check_config import async_check_ha_config_file
+        result = await async_check_ha_config_file(hass)
+        if not result.valid:
+            # Restore from backup
+            def _restore_backup() -> None:
+                try:
+                    with open(backup_path, "rb") as src:
+                        with open(automations_path, "wb") as dst:
+                            dst.write(src.read())
+                except FileNotFoundError:
+                    pass
+            await hass.async_add_executor_job(_restore_backup)
+            return {
+                "applied": False,
+                "backup_restored": True,
+                "error": f"Config validation failed: {result.errors}",
+            }
+    except ImportError:
+        _LOGGER.warning("check_config not available, skipping validation")
+
+    await hass.services.async_call("automation", "reload", {}, blocking=True)
+
+    auto_id = payload.get("automation_id", payload.get("config", {}).get("id", ""))
+    return {
+        "applied": True,
+        "automation_id": auto_id,
+        "backup_restored": False,
+    }
