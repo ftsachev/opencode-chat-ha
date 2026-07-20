@@ -60,6 +60,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "List Home Assistant entities. Filter by domain, area, label, and/or "
             "a keyword search across entity_id and friendly name."
         ),
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -74,6 +75,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "get_entity",
         "description": "Get the full state and attributes for a single entity.",
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {"entity_id": {"type": "string"}},
@@ -83,6 +85,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "list_areas",
         "description": "List Home Assistant areas with their IDs and names.",
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -91,6 +94,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "List Lovelace dashboards. Each entry has a url_path, title, "
             "mode, and whether it has a stored config."
         ),
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -100,6 +104,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "Use 'lovelace' for the default dashboard. "
             "Set summary=true for lightweight view listing."
         ),
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -115,6 +120,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "Much cheaper than get_dashboard for large dashboards. "
             "Use get_dashboard(summary=true) first to discover view paths."
         ),
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -129,6 +135,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "List custom Lovelace cards/modules installed on this HA."
         ),
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -137,6 +144,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "List automations defined in HA. Returns entity_id, automation_id, "
             "name, state (on/off), area, and labels."
         ),
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -151,6 +159,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "List recent execution traces of an automation."
         ),
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -163,6 +172,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "get_automation_trace",
         "description": "Get the full step-by-step trace of one automation execution.",
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -175,6 +185,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "get_state_history",
         "description": "Get recent state changes for an entity (last N hours).",
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -189,6 +200,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "List HA services. Use domain and/or search to narrow results."
         ),
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -201,6 +213,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "get_service",
         "description": "Get full parameter details for a single HA service.",
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -215,6 +228,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Propose a new full Lovelace dashboard config. Staged for approval."
         ),
+        "annotations": {"readOnly": False, "idempotent": False, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -231,6 +245,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "Propose updating a single view in a Lovelace dashboard. "
             "Staged for approval."
         ),
+        "annotations": {"readOnly": False, "idempotent": False, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -247,6 +262,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Propose creating a new automation. Staged for approval."
         ),
+        "annotations": {"readOnly": False, "idempotent": False, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -262,6 +278,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "Propose updating an existing automation by automation_id. "
             "Staged for approval."
         ),
+        "annotations": {"readOnly": False, "idempotent": False, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -277,6 +294,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Propose deleting an automation. Staged for approval."
         ),
+        "annotations": {"readOnly": False, "idempotent": False, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
@@ -289,6 +307,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "get_automation",
         "description": "Fetch the full config of an automation by automation_id.",
+        "annotations": {"readOnly": True, "idempotent": True, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {"automation_id": {"type": "string"}},
@@ -300,6 +319,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Propose calling a Home Assistant service. Staged for approval."
         ),
+        "annotations": {"readOnly": False, "idempotent": False, "destructive": False},
         "input_schema": {
             "type": "object",
             "properties": {
