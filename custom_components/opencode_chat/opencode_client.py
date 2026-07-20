@@ -10,7 +10,7 @@ from urllib.error import HTTPError, URLError
 
 from .const import DEFAULT_MAX_TOKENS, MAX_TURNS_PER_REQUEST
 from .storage import Message, SessionStore
-from .tools import TOOL_DEFINITIONS, ToolRegistry
+from .tools import TOOL_DEFINITIONS, ToolRegistry, _validate_propose_config
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,13 +26,14 @@ Rules:
 - Be concise. Use markdown for tables and code blocks.
 
 The following external actions are available. When you need to use one, put
-this EXACT format on its own line (no code block, no backticks):
+this EXACT format on its own line inside a fenced code block:
 
-!ACTION {{"action": "name", "arguments": {{}}}}
+```action
+{"action": "name", "arguments": {}}
+```
 
-The system parses this line and executes the action. Do NOT wrap it in code
-fences — just put it inline on its own line. Wait for the result before
-continuing. You can request multiple actions in sequence.
+The system parses this block and executes the action. Wait for the result
+before continuing. You can request multiple actions in sequence.
 IMPORTANT: Once a tool has been called and returned a result, DO NOT call
 it again. Use the result you already received. If `truncated: true`,
 note there are more results but answer with what you have. For
@@ -81,21 +82,20 @@ TOOL_DESCRIPTIONS = _build_tool_descriptions()
 
 
 def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
-    """Parse !ACTION lines from LLM response text as tool calls."""
-    PREFIX = "!ACTION "
+    """Parse ```action fenced blocks from LLM response text as tool calls."""
+    import re
+    BLOCK_RE = re.compile(r"```action\s*\n(.*?)\n```", re.DOTALL)
     calls = []
-    for line in text.split("\n"):
-        stripped = line.strip()
-        if stripped.startswith(PREFIX):
-            try:
-                parsed = json.loads(stripped[len(PREFIX):])
-                if isinstance(parsed, dict):
-                    name = parsed.get("name") or parsed.get("tool") or parsed.get("action")
-                    if name:
-                        args = parsed.get("arguments", parsed.get("args", {}))
-                        calls.append({"name": name, "arguments": args})
-            except json.JSONDecodeError:
-                pass
+    for match in BLOCK_RE.finditer(text):
+        try:
+            parsed = json.loads(match.group(1).strip())
+            if isinstance(parsed, dict):
+                name = parsed.get("name") or parsed.get("tool") or parsed.get("action")
+                if name:
+                    args = parsed.get("arguments", parsed.get("args", {}))
+                    calls.append({"name": name, "arguments": args})
+        except json.JSONDecodeError:
+            pass
     return calls
 
 
@@ -259,11 +259,11 @@ class OpenCodeClient:
         opencode_sid: str | None = None,
         model: str | None = None,
         agent: str | None = None,
-    ) -> list[Message]:
+    ) -> tuple[list[Message], str]:
         """Run a tool-use loop, using OpenCode as the LLM backend.
 
-        Uses the polling-based /prompt API. Returns the new messages
-        appended (assistant turns + tool_result turns).
+        Uses the polling-based /message API. Returns a tuple of
+        (new_messages, opencode_session_id).
         """
         active_agent = agent or self._default_agent
         new_messages: list[Message] = []
@@ -311,6 +311,7 @@ class OpenCodeClient:
             assistant_blocks: list[dict[str, Any]] = [
                 {"type": "text", "text": clean_text}
             ]
+            seen_calls: set[str] = set()
 
             if not tool_calls:
                 await emit({"type": "turn_complete"})
@@ -321,44 +322,36 @@ class OpenCodeClient:
                 break
 
             for tc in tool_calls:
-                await emit(
-                    {
-                        "type": "tool_use_start",
-                        "id": uuid.uuid4().hex,
-                        "name": tc.get("name", ""),
-                    }
-                )
+                tc_name = tc.get("name", "")
+                tc_args = tc.get("arguments", {})
                 tc_id = uuid.uuid4().hex
-                result = await self._tools.call(
-                    tc.get("name", ""),
-                    tc.get("arguments", {}),
-                    session_id,
-                    tc_id,
-                )
-                await emit(
-                    {
-                        "type": "tool_result",
-                        "id": tc_id,
-                        "name": tc.get("name", ""),
-                        "result": result,
-                    }
-                )
-                assistant_blocks.append(
-                    {
-                        "type": "tool_use",
-                        "id": tc_id,
-                        "name": tc.get("name", ""),
-                        "input": tc.get("arguments", {}),
-                    }
-                )
-                result_text = json.dumps(result, default=str)
-                clean_text += f"\n  [Called tool: {tc.get('name', '')} with args {json.dumps(tc.get('arguments', {}))}]"
-                api_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": f"  [Tool result for {tc.get('name', '')}]: {result_text}",
-                    }
-                )
+
+                # Validate tool call
+                validation_error = _validate_tool_call(tc_name, tc_args)
+                if validation_error:
+                    await emit({"type": "tool_result", "id": tc_id, "name": tc_name, "result": {"error": validation_error}})
+                    api_messages.append({"role": "assistant", "content": f"  [Tool error for {tc_name}]: {validation_error}"})
+                    continue
+
+                # Dedupe: skip if same tool+args already called this turn
+                call_key = f"{tc_name}:{json.dumps(tc_args, sort_keys=True)}"
+                if call_key in seen_calls:
+                    await emit({"type": "tool_result", "id": tc_id, "name": tc_name, "result": {"skipped": "duplicate call"}})
+                    continue
+                seen_calls.add(call_key)
+
+                await emit({"type": "tool_use_start", "id": tc_id, "name": tc_name})
+                result = await self._tools.call(tc_name, tc_args, session_id, tc_id)
+                # Sanitize tool result to prevent action block injection
+                if isinstance(result, dict) and "text" in result:
+                    result["text"] = _sanitize_tool_result(result["text"])
+                elif isinstance(result, str):
+                    result = _sanitize_tool_result(result)
+                await emit({"type": "tool_result", "id": tc_id, "name": tc_name, "result": result})
+                assistant_blocks.append({"type": "tool_use", "id": tc_id, "name": tc_name, "input": tc_args})
+                result_text = json.dumps(result, default=str)[:2000]
+                clean_text += f"\n  [Called tool: {tc_name} with args {json.dumps(tc_args)}]"
+                api_messages.append({"role": "assistant", "content": f"  [Tool result for {tc_name}]: {result_text}"})
 
             api_messages.insert(
                 -len(tool_calls),
@@ -411,5 +404,33 @@ def _history_to_text(history: list[Message]) -> list[dict[str, str]]:
 
 
 def _remove_tool_call_blocks(text: str) -> str:
-    lines = [l for l in text.split("\n") if not l.strip().startswith("!ACTION")]
-    return "\n".join(lines).strip()
+    """Remove ```action fenced blocks from text."""
+    import re
+    BLOCK_RE = re.compile(r"```action\s*\n.*?\n```", re.DOTALL)
+    return BLOCK_RE.sub("", text).strip()
+
+
+def _sanitize_tool_result(text: str) -> str:
+    """Strip any ```action blocks from tool results to prevent injection."""
+    import re
+    BLOCK_RE = re.compile(r"```action\s*\n.*?\n```", re.DOTALL)
+    return BLOCK_RE.sub("[action block removed]", text)
+
+
+def _validate_tool_call(name: str, args: dict[str, Any]) -> str | None:
+    """Validate a tool call against TOOL_DEFINITIONS. Returns error message or None."""
+    tool_def = next((t for t in TOOL_DEFINITIONS if t["name"] == name), None)
+    if tool_def is None:
+        return f"Unknown tool: {name}"
+    schema = tool_def.get("input_schema", {})
+    required = schema.get("required", [])
+    for field in required:
+        if field not in args:
+            return f"Missing required argument: {field}"
+    # Validate propose_* payloads
+    if name.startswith("propose_"):
+        try:
+            _validate_propose_config(args.get("config", {}), name.replace("propose_", ""))
+        except ValueError as e:
+            return str(e)
+    return None
