@@ -84,7 +84,9 @@ class OpenCodeChatConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry) -> OptionsFlow:
-        return OpenCodeChatOptionsFlow(config_entry)
+        # Modern HA sets self.config_entry on the OptionsFlow automatically;
+        # passing it to the constructor raises TypeError.
+        return OpenCodeChatOptionsFlow()
 
 
 class OpenCodeChatOptionsFlow(OptionsFlow):
