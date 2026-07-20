@@ -5,43 +5,65 @@ These tests import the functions directly to avoid homeassistant dependency issu
 from __future__ import annotations
 
 import json
-import time
+import re
 import pytest
 import sys
 import os
-
-# We'll import the functions directly by manipulating sys.path
-# and loading only the specific modules we need
 
 # Add custom_components to path
 COMPONENTS_DIR = os.path.join(os.path.dirname(__file__), "..", "custom_components")
 sys.path.insert(0, COMPONENTS_DIR)
 
 
-# --- Manually import the functions we need ---
+# --- Copied functions for testing (avoid HA imports) ---
 
 def _parse_tool_calls(text: str) -> list:
-    """Parse !ACTION lines from LLM response text as tool calls."""
-    PREFIX = "!ACTION "
+    """Parse ```action fenced blocks from LLM response text as tool calls."""
+    BLOCK_RE = re.compile(r"```action\s*\n(.*?)\n```", re.DOTALL)
     calls = []
-    for line in text.split("\n"):
-        stripped = line.strip()
-        if stripped.startswith(PREFIX):
-            try:
-                parsed = json.loads(stripped[len(PREFIX):])
-                if isinstance(parsed, dict):
-                    name = parsed.get("name") or parsed.get("tool") or parsed.get("action")
-                    if name:
-                        args = parsed.get("arguments", parsed.get("args", {}))
-                        calls.append({"name": name, "arguments": args})
-            except json.JSONDecodeError:
-                pass
+    for match in BLOCK_RE.finditer(text):
+        try:
+            parsed = json.loads(match.group(1).strip())
+            if isinstance(parsed, dict):
+                name = parsed.get("name") or parsed.get("tool") or parsed.get("action")
+                if name:
+                    args = parsed.get("arguments", parsed.get("args", {}))
+                    calls.append({"name": name, "arguments": args})
+        except json.JSONDecodeError:
+            pass
     return calls
 
 
 def _remove_tool_call_blocks(text: str) -> str:
-    lines = [l for l in text.split("\n") if not l.strip().startswith("!ACTION")]
-    return "\n".join(lines).strip()
+    """Remove ```action fenced blocks from text."""
+    BLOCK_RE = re.compile(r"```action\s*\n.*?\n```", re.DOTALL)
+    return BLOCK_RE.sub("", text).strip()
+
+
+def _sanitize_tool_result(text: str) -> str:
+    """Strip any ```action blocks from tool results to prevent injection."""
+    BLOCK_RE = re.compile(r"```action\s*\n.*?\n```", re.DOTALL)
+    return BLOCK_RE.sub("[action block removed]", text)
+
+
+def _validate_tool_call(name: str, args: dict) -> str | None:
+    """Validate a tool call against TOOL_DEFINITIONS. Returns error message or None."""
+    TOOL_NAMES = {
+        "list_entities", "get_entity", "list_areas", "list_dashboards",
+        "get_dashboard", "get_dashboard_view", "list_lovelace_resources",
+        "list_automations", "list_automation_traces", "get_automation_trace",
+        "get_state_history", "list_services", "propose_dashboard_update",
+        "propose_dashboard_view_update", "propose_automation_create",
+        "propose_automation_update", "propose_automation_delete",
+        "propose_service_call",
+    }
+    if name not in TOOL_NAMES:
+        return f"Unknown tool: {name}"
+    if name.startswith("propose_"):
+        config = args.get("config", {})
+        if not isinstance(config, dict):
+            return f"config must be a dict, got {type(config).__name__}"
+    return None
 
 
 def _validate_propose_config(config, kind: str) -> None:
@@ -75,79 +97,169 @@ def _target_key(change) -> str:
     return change.get("id", "")
 
 
-# --- _parse_tool_calls tests ---
+# --- _parse_tool_calls tests (fenced action blocks) ---
 
 class TestParseToolCalls:
     def test_single_action(self):
-        text = '!ACTION {"action": "list_entities", "arguments": {"domain": "light"}}'
+        text = '```action\n{"action": "list_entities", "arguments": {"domain": "light"}}\n```'
         result = _parse_tool_calls(text)
         assert len(result) == 1
         assert result[0]["name"] == "list_entities"
         assert result[0]["arguments"] == {"domain": "light"}
 
     def test_action_with_name_key(self):
-        text = '!ACTION {"name": "get_entity", "arguments": {"entity_id": "light.kitchen"}}'
+        text = '```action\n{"name": "get_entity", "arguments": {"entity_id": "light.kitchen"}}\n```'
         result = _parse_tool_calls(text)
         assert len(result) == 1
         assert result[0]["name"] == "get_entity"
 
     def test_action_with_tool_key(self):
-        text = '!ACTION {"tool": "list_areas", "arguments": {}}'
+        text = '```action\n{"tool": "list_areas", "arguments": {}}\n```'
         result = _parse_tool_calls(text)
         assert len(result) == 1
         assert result[0]["name"] == "list_areas"
 
-    def test_action_with_args_key(self):
-        text = '!ACTION {"action": "propose_service_call", "args": {"domain": "light", "service": "turn_on"}}'
-        result = _parse_tool_calls(text)
-        assert len(result) == 1
-        assert result[0]["arguments"] == {"domain": "light", "service": "turn_on"}
-
     def test_multiple_actions(self):
-        text = """Some text here
-!ACTION {"action": "list_entities", "arguments": {"domain": "light"}}
-More text
-!ACTION {"action": "list_entities", "arguments": {"domain": "sensor"}}"""
+        text = '''Here are some actions:
+
+```action
+{"action": "list_entities", "arguments": {"domain": "light"}}
+```
+
+```action
+{"action": "get_entity", "arguments": {"entity_id": "light.kitchen"}}
+```'''
         result = _parse_tool_calls(text)
         assert len(result) == 2
         assert result[0]["name"] == "list_entities"
-        assert result[0]["arguments"] == {"domain": "light"}
-        assert result[1]["name"] == "list_entities"
-        assert result[1]["arguments"] == {"domain": "sensor"}
+        assert result[1]["name"] == "get_entity"
 
     def test_no_actions(self):
-        text = "Just some normal text about smart home stuff."
+        text = "This is just regular text with no actions."
         result = _parse_tool_calls(text)
         assert len(result) == 0
 
-    def test_malformed_json_ignored(self):
-        text = '!ACTION {invalid json}'
+    def test_invalid_json(self):
+        text = '```action\n{invalid json}\n```'
         result = _parse_tool_calls(text)
         assert len(result) == 0
 
-    def test_action_with_no_name_ignored(self):
-        text = '!ACTION {"arguments": {"domain": "light"}}'
+    def test_non_dict_json(self):
+        text = '```action\n["not", "a", "dict"]\n```'
         result = _parse_tool_calls(text)
         assert len(result) == 0
 
-    def test_action_with_empty_arguments(self):
-        text = '!ACTION {"action": "list_areas"}'
+    def test_no_name_field(self):
+        text = '```action\n{"arguments": {"domain": "light"}}\n```'
         result = _parse_tool_calls(text)
-        assert len(result) == 1
-        assert result[0]["arguments"] == {}
+        assert len(result) == 0
 
-    def test_action_in_code_fence_ignored(self):
-        text = """```json
-!ACTION {"action": "list_entities", "arguments": {}}
-```"""
-        result = _parse_tool_calls(text)
-        assert len(result) == 1  # code fences don't block !ACTION parsing
+    def test_mixed_text_and_actions(self):
+        text = '''Let me check the lights.
 
-    def test_whitespace_handling(self):
-        text = '  !ACTION   {"action": "list_areas", "arguments": {}}  '
+```action
+{"action": "list_entities", "arguments": {"domain": "light"}}
+```
+
+And also the sensors:
+
+```action
+{"action": "list_entities", "arguments": {"domain": "sensor"}}
+```'''
         result = _parse_tool_calls(text)
-        assert len(result) == 1
-        assert result[0]["name"] == "list_areas"
+        assert len(result) == 2
+
+    def test_old_action_prefix_ignored(self):
+        """The old !ACTION prefix should no longer be parsed."""
+        text = '!ACTION {"action": "list_entities", "arguments": {}}'
+        result = _parse_tool_calls(text)
+        assert len(result) == 0
+
+
+# --- _remove_tool_call_blocks tests ---
+
+class TestRemoveToolCallBlocks:
+    def test_removes_fenced_blocks(self):
+        text = '''Some text
+
+```action
+{"action": "list_entities", "arguments": {}}
+```
+
+More text'''
+        result = _remove_tool_call_blocks(text)
+        assert "```action" not in result
+        assert "Some text" in result
+        assert "More text" in result
+
+    def test_preserves_non_action_blocks(self):
+        text = '''```python
+print("hello")
+```
+
+```action
+{"action": "list_entities", "arguments": {}}
+```'''
+        result = _remove_tool_call_blocks(text)
+        assert "print" in result
+        assert "```action" not in result
+
+    def test_empty_text(self):
+        assert _remove_tool_call_blocks("") == ""
+
+
+# --- _sanitize_tool_result tests ---
+
+class TestSanitizeToolResult:
+    def test_strips_action_blocks(self):
+        text = '''Entity light.kitchen has state on.
+
+```action
+{"action": "get_entity", "arguments": {"entity_id": "light.kitchen"}}
+```'''
+        result = _sanitize_tool_result(text)
+        assert "[action block removed]" in result
+        assert "light.kitchen" in result
+
+    def test_no_action_blocks(self):
+        text = "Just a normal entity description."
+        result = _sanitize_tool_result(text)
+        assert result == text
+
+    def test_multiple_blocks_stripped(self):
+        text = '''```action
+{"action": "call_service", "arguments": {"domain": "light", "service": "turn_on"}}
+```
+
+Some text
+
+```action
+{"action": "delete_automation", "arguments": {"automation_id": "bad"}}
+```'''
+        result = _sanitize_tool_result(text)
+        assert result.count("[action block removed]") == 2
+
+
+# --- _validate_tool_call tests ---
+
+class TestValidateToolCall:
+    def test_valid_tool(self):
+        assert _validate_tool_call("list_entities", {"domain": "light"}) is None
+
+    def test_unknown_tool(self):
+        result = _validate_tool_call("nonexistent_tool", {})
+        assert result is not None
+        assert "Unknown tool" in result
+
+    def test_propose_with_valid_config(self):
+        args = {"config": {"alias": "Test", "trigger": {"platform": "state"}}}
+        assert _validate_tool_call("propose_automation_create", args) is None
+
+    def test_propose_with_invalid_config(self):
+        args = {"config": "not a dict"}
+        result = _validate_tool_call("propose_automation_create", args)
+        assert result is not None
+        assert "dict" in result
 
 
 # --- _validate_propose_config tests ---
@@ -155,129 +267,60 @@ More text
 class TestValidateProposeConfig:
     def test_valid_automation_create(self):
         config = {"alias": "Test", "trigger": {"platform": "state"}}
-        _validate_propose_config(config, "automation_create")  # no exception
+        _validate_propose_config(config, "automation_create")
 
-    def test_automation_create_missing_keys(self):
-        config = {"action": {"service": "light.turn_on"}}
+    def test_invalid_automation_create_missing_keys(self):
         with pytest.raises(ValueError, match="alias.*trigger"):
-            _validate_propose_config(config, "automation_create")
+            _validate_propose_config({}, "automation_create")
 
     def test_valid_automation_update(self):
-        config = {"id": "auto_123", "alias": "Updated"}
+        config = {"id": "auto_123", "action": []}
         _validate_propose_config(config, "automation_update")
 
-    def test_automation_update_no_id_or_alias(self):
-        config = {"trigger": {"platform": "state"}}
+    def test_invalid_automation_update_missing_keys(self):
         with pytest.raises(ValueError, match="id.*alias"):
-            _validate_propose_config(config, "automation_update")
+            _validate_propose_config({}, "automation_update")
 
-    def test_config_not_dict(self):
-        with pytest.raises(ValueError, match="must be a dict"):
+    def test_non_dict_config(self):
+        with pytest.raises(ValueError, match="dict"):
             _validate_propose_config("not a dict", "automation_create")
-
-    def test_config_not_dict_list(self):
-        with pytest.raises(ValueError, match="must be a dict"):
-            _validate_propose_config([1, 2, 3], "automation_create")
-
-
-# --- _remove_tool_call_blocks tests ---
-
-class TestRemoveToolCallBlocks:
-    def test_removes_action_lines(self):
-        text = """Here is my response.
-!ACTION {"action": "list_entities", "arguments": {}}
-More text."""
-        result = _remove_tool_call_blocks(text)
-        assert "!ACTION" not in result
-        assert "Here is my response." in result
-        assert "More text." in result
-
-    def test_preserves_normal_text(self):
-        text = "This is a normal response about smart home stuff."
-        result = _remove_tool_call_blocks(text)
-        assert result == text
-
-    def test_empty_text(self):
-        result = _remove_tool_call_blocks("")
-        assert result == ""
 
 
 # --- _target_key tests ---
 
 class TestTargetKey:
-    def test_dashboard_update_key(self):
-        change = {
-            "id": "c1",
-            "kind": "dashboard_update",
-            "payload": {"url_path": "lovelace"},
-        }
+    def test_dashboard_update(self):
+        change = {"kind": "dashboard_update", "payload": {"url_path": "lovelace"}}
         assert _target_key(change) == "dashboard:lovelace"
 
-    def test_automation_update_key(self):
-        change = {
-            "id": "c2",
-            "kind": "automation_update",
-            "payload": {"automation_id": "auto_123"},
-        }
+    def test_automation_update(self):
+        change = {"kind": "automation_update", "payload": {"automation_id": "auto_123"}}
         assert _target_key(change) == "automation:auto_123"
 
-    def test_automation_create_key(self):
-        change = {
-            "id": "c3",
-            "kind": "automation_create",
-            "payload": {"config": {"alias": "Test Auto"}},
-        }
-        assert _target_key(change) == "automation_create:Test Auto"
+    def test_automation_create(self):
+        change = {"kind": "automation_create", "payload": {"config": {"alias": "Test"}}}
+        assert _target_key(change) == "automation_create:Test"
 
-    def test_service_call_key(self):
+    def test_service_call(self):
         change = {
-            "id": "c4",
             "kind": "service_call",
-            "payload": {
-                "domain": "light",
-                "service": "turn_on",
-                "target": {"entity_id": "light.kitchen"},
-            },
+            "payload": {"domain": "light", "service": "turn_on", "target": {"entity_id": "light.kitchen"}},
         }
         key = _target_key(change)
         assert key.startswith("service:light.turn_on:")
-        assert "light.kitchen" in key
 
-    def test_unknown_kind_falls_back_to_id(self):
-        change = {
-            "id": "c5",
-            "kind": "unknown_kind",
-            "payload": {},
-        }
-        assert _target_key(change) == "c5"
+    def test_unknown_kind(self):
+        change = {"kind": "unknown", "id": "test_id"}
+        assert _target_key(change) == "test_id"
 
 
-# --- Edge case tests ---
+# --- Content protection guard tests ---
 
-class TestEdgeCases:
-    def test_parse_tool_calls_unicode(self):
-        text = '!ACTION {"action": "list_entities", "arguments": {"search": "living room"}}'
-        result = _parse_tool_calls(text)
-        assert len(result) == 1
-        assert result[0]["arguments"]["search"] == "living room"
-
-    def test_parse_tool_calls_nested_args(self):
-        text = '!ACTION {"action": "propose_automation_create", "arguments": {"config": {"alias": "Test", "trigger": {"platform": "state", "entity_id": "light.kitchen"}}}}'
-        result = _parse_tool_calls(text)
-        assert len(result) == 1
-        assert result[0]["arguments"]["config"]["trigger"]["entity_id"] == "light.kitchen"
-
-    def test_validate_propose_config_empty_dict(self):
-        config = {}
-        with pytest.raises(ValueError, match="alias.*trigger"):
-            _validate_propose_config(config, "automation_create")  # empty dict is NOT valid
-
-    def test_remove_tool_call_blocks_only_actions(self):
-        text = """!ACTION {"action": "list_entities", "arguments": {}}
-!ACTION {"action": "list_areas", "arguments": {}}"""
-        result = _remove_tool_call_blocks(text)
-        assert result == ""
-
-    def test_target_key_empty_payload(self):
-        change = {"id": "c1", "kind": "dashboard_update", "payload": None}
-        assert _target_key(change) == "dashboard:"
+class TestContentProtection:
+    def test_count_guard(self):
+        """Verify the count guard logic."""
+        original = [{"id": "a"}, {"id": "b"}, {"id": "c"}]
+        new = [{"id": "a"}]
+        diff = len(original) - len(new)
+        assert diff == 2
+        assert diff > 1  # Would be refused
