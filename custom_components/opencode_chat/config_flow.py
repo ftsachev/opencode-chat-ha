@@ -45,7 +45,7 @@ class OpenCodeChatConfigFlow(ConfigFlow, domain=DOMAIN):
             try:
                 url = user_input[CONF_URL].rstrip("/")
                 password = user_input.get(CONF_PASSWORD, "")
-                req = Request(f"{url}/global/health")
+                req = Request(f"{url}/api/health")
                 if password:
                     creds = base64.b64encode(
                         f"opencode:{password}".encode()

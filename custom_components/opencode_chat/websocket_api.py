@@ -368,13 +368,18 @@ async def ws_get_models(
 ) -> None:
     client: OpenCodeClient = _get_domain_data(hass).get("client")
     try:
-        providers = await hass.async_add_executor_job(
-            lambda: client._request("GET", "/config/providers")
+        resp = await hass.async_add_executor_job(
+            lambda: client._request("GET", "/api/model")
         )
-        models = []
-        for p in providers.get("providers", []):
-            for m in p.get("models", []):
-                models.append({"id": m.get("id"), "name": m.get("name", m.get("id"))})
+        models = [
+            {
+                "id": m.get("id"),
+                "name": m.get("name", m.get("id")),
+                "provider": m.get("providerID"),
+            }
+            for m in resp.get("data", [])
+            if m.get("id")
+        ]
         connection.send_result(msg["id"], models)
     except Exception:
         connection.send_result(msg["id"], [])

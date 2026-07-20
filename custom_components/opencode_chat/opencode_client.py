@@ -142,7 +142,7 @@ class OpenCodeClient:
 
     def _request(
         self, method: str, path: str, body: dict | None = None, timeout: int = 120,
-        retries: int = 2, retry_delay: float = 1.0,
+        retries: int = 2, retry_delay: float = 1.0, log_errors: bool = True,
     ) -> Any:
         url = f"{self._url}{path}"
         data = json.dumps(body).encode() if body else None
@@ -163,7 +163,10 @@ class OpenCodeClient:
                 # Retry on 5xx (server errors) and 429 (rate limit), not on 4xx (client errors)
                 if e.code < 500 and e.code != 429:
                     body_text = e.read().decode()
-                    _LOGGER.error("OpenCode API error %s %s: %s", method, path, body_text)
+                    _LOGGER.log(
+                        logging.ERROR if log_errors else logging.DEBUG,
+                        "OpenCode API error %s %s: %s", method, path, body_text,
+                    )
                     raise
                 if attempt < retries:
                     _LOGGER.warning(
@@ -173,7 +176,10 @@ class OpenCodeClient:
                     time.sleep(retry_delay)
                     continue
                 body_text = e.read().decode()
-                _LOGGER.error("OpenCode API error %s %s: %s", method, path, body_text)
+                _LOGGER.log(
+                    logging.ERROR if log_errors else logging.DEBUG,
+                    "OpenCode API error %s %s: %s", method, path, body_text,
+                )
                 raise
             except (URLError, OSError) as e:
                 last_error = e
@@ -191,43 +197,92 @@ class OpenCodeClient:
         raise last_error  # should not reach, but satisfies type checker
 
     def health(self) -> dict:
-        return self._request("GET", "/global/health")
+        return self._request("GET", "/api/health")
 
     def create_session(self) -> dict:
-        resp = self._request("POST", "/session", {"title": "HA Chat"})
+        resp = self._request("POST", "/api/session", {"title": "HA Chat"})
         if isinstance(resp, dict) and "data" in resp:
             return resp["data"]
         return resp
 
     def list_sessions(self) -> list:
-        resp = self._request("GET", "/session")
+        resp = self._request("GET", "/api/session")
         if isinstance(resp, dict) and "data" in resp:
             return resp["data"]
         return resp if isinstance(resp, list) else []
 
     def delete_session(self, session_id: str) -> bool:
+        """Delete a server-side session.
+
+        Not all OpenCode server builds expose a delete endpoint -- some
+        return 404 for every variant. Failure is non-fatal (the session is
+        simply left on the server), so this degrades quietly rather than
+        logging an error on every new chat.
+        """
         try:
-            self._request("DELETE", f"/session/{session_id}")
+            self._request(
+                "DELETE", f"/api/session/{session_id}", retries=0, log_errors=False
+            )
             return True
         except Exception:
+            _LOGGER.debug("Server did not accept session delete for %s", session_id)
             return False
 
     def send_prompt(self, session_id: str, text: str) -> dict:
-        """Send a prompt and wait for the response (synchronous)."""
+        """Queue a prompt for the session.
+
+        This is fire-and-forget: the server acknowledges with the accepted
+        prompt (admittedSeq / delivery), NOT the assistant's reply. The
+        reply has to be collected separately via _poll_final_response.
+        """
         return self._request(
             "POST",
-            f"/session/{session_id}/message",
-            {"message": text},
-            timeout=120,
+            f"/api/session/{session_id}/prompt",
+            {"prompt": {"text": text}},
+            timeout=30,
         )
 
     def get_messages(self, session_id: str, limit: int = 50) -> list:
         resp = self._request(
-            "GET", f"/session/{session_id}/message?limit={limit}"
+            "GET", f"/api/session/{session_id}/message?limit={limit}"
         )
         if isinstance(resp, dict) and "data" in resp:
             return resp["data"]
         return resp if isinstance(resp, list) else []
+
+    def _poll_final_response(
+        self, session_id: str, poll_interval: float = 1.0, max_wait: float = 120.0
+    ) -> dict | None:
+        """Poll until messages stabilize, then return the latest assistant message.
+
+        POST /api/session/{id}/prompt only acknowledges the prompt, so the
+        assistant's reply has to be collected by polling. Messages are
+        newest-first. A message count that stops changing for 3s means the
+        assistant has finished generating and running its own tools.
+        """
+        deadline = time.monotonic() + max_wait
+        stable_for = 0.0
+        last_count = len(self.get_messages(session_id))
+
+        while time.monotonic() < deadline:
+            time.sleep(poll_interval)
+            msgs = self.get_messages(session_id)
+            cur = len(msgs)
+            # Only start counting toward "settled" once an assistant reply
+            # actually exists. The count sits unchanged while the model is
+            # still thinking, so treating that as settled would give up
+            # before the reply ever arrives.
+            assistant = next(
+                (m for m in msgs if m.get("type") == "assistant"), None
+            )
+            if cur == last_count and assistant is not None:
+                stable_for += poll_interval
+                if stable_for >= 3.0:
+                    return assistant
+            else:
+                last_count = cur
+                stable_for = 0.0
+        return None
 
     async def summarize_title(self, user_text: str) -> str:
         """Quick call to title a chat session via a temp session."""
@@ -315,30 +370,21 @@ class OpenCodeClient:
             last_sent_len = len(api_messages)
 
             _LOGGER.debug("Sending prompt turn %d to session %s", turn, opencode_sid)
-            # POST /session/{id}/message is a send-and-wait endpoint: OpenCode
-            # blocks server-side until the assistant has replied and returns
-            # the result directly in the response body, so there is no
-            # separate response to poll for afterwards.
-            send_resp = await loop.run_in_executor(
+            # POST /api/session/{id}/prompt only acknowledges the prompt, so
+            # the assistant's reply must be collected by polling afterwards.
+            await loop.run_in_executor(
                 None, lambda: self.send_prompt(opencode_sid, full_prompt)
             )
 
-            # The response may be the assistant message directly, or wrapped
-            # in a {"data": ...} envelope like other endpoints (see
-            # create_session / list_sessions above).
-            payload = (
-                send_resp.get("data", send_resp)
-                if isinstance(send_resp, dict)
-                else send_resp
+            assistant_msg = await loop.run_in_executor(
+                None, lambda: self._poll_final_response(opencode_sid)
             )
-            if isinstance(payload, list):
-                assistant_messages = payload
-            elif isinstance(payload, dict):
-                assistant_messages = [payload]
-            else:
-                assistant_messages = []
 
-            text_content = _extract_text_from_assistant(assistant_messages) or ""
+            if not assistant_msg:
+                await emit({"type": "error", "error": "No response from AI"})
+                break
+
+            text_content = _extract_text_from_assistant([assistant_msg]) or ""
 
             if not text_content:
                 await emit({"type": "error", "error": "No response from AI"})
