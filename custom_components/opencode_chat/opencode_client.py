@@ -253,19 +253,18 @@ class OpenCodeClient:
     async def summarize_title(self, user_text: str) -> str:
         """Quick call to title a chat session via a temp session."""
         try:
-            sess = await asyncio.get_event_loop().run_in_executor(
-                None, self.create_session
-            )
+            loop = asyncio.get_running_loop()
+            sess = await loop.run_in_executor(None, self.create_session)
             sess_id = sess.get("id") or sess.get("sessionID", "")
             if not sess_id:
                 return ""
 
             prompt_text = f"{TITLE_PROMPT}\n\n{user_text[:500]}"
-            await asyncio.get_event_loop().run_in_executor(
+            await loop.run_in_executor(
                 None, lambda: self.send_prompt(sess_id, prompt_text)
             )
 
-            resp_msg = await asyncio.get_event_loop().run_in_executor(
+            resp_msg = await loop.run_in_executor(
                 None, lambda: self._poll_final_response(sess_id, max_wait=30.0)
             )
 
@@ -275,7 +274,7 @@ class OpenCodeClient:
                 if text:
                     title = text.strip().strip("\"'.,!?")[:60]
 
-            await asyncio.get_event_loop().run_in_executor(
+            await loop.run_in_executor(
                 None, lambda: self.delete_session(sess_id)
             )
             return title
@@ -300,10 +299,10 @@ class OpenCodeClient:
         active_agent = agent or self._default_agent
         new_messages: list[Message] = []
 
+        loop = asyncio.get_running_loop()
+
         if not opencode_sid:
-            sess = await asyncio.get_event_loop().run_in_executor(
-                None, self.create_session
-            )
+            sess = await loop.run_in_executor(None, self.create_session)
             opencode_sid = sess.get("id") or sess.get("sessionID", "")
 
         state_block = _session_state_block(self._tools.store, session_id)
@@ -322,11 +321,11 @@ class OpenCodeClient:
             full_prompt += "assistant:"
 
             _LOGGER.debug("Sending prompt turn %d to session %s", turn, opencode_sid)
-            await asyncio.get_event_loop().run_in_executor(
+            await loop.run_in_executor(
                 None, lambda: self.send_prompt(opencode_sid, full_prompt)
             )
 
-            assistant_msg = await asyncio.get_event_loop().run_in_executor(
+            assistant_msg = await loop.run_in_executor(
                 None, lambda: self._poll_final_response(opencode_sid)
             )
 

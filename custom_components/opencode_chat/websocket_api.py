@@ -415,14 +415,18 @@ async def _execute_change(
     if kind == "automation_create":
         config = payload.get("config", {})
         automations_path = hass.config.path("automations.yaml")
-        existing = []
-        try:
-            with open(automations_path) as f:
-                existing = yaml_lib.safe_load(f) or []
-        except (FileNotFoundError, yaml_lib.YAMLError):
-            existing = []
-        if not isinstance(existing, list):
-            existing = [existing] if existing else []
+
+        def _read_automations() -> list:
+            try:
+                with open(automations_path) as f:
+                    existing = yaml_lib.safe_load(f) or []
+            except (FileNotFoundError, yaml_lib.YAMLError):
+                existing = []
+            if not isinstance(existing, list):
+                existing = [existing] if existing else []
+            return existing
+
+        existing = await hass.async_add_executor_job(_read_automations)
 
         # Ensure we have a valid automation ID
         auto_id = config.get("id")
@@ -431,9 +435,12 @@ async def _execute_change(
             config["id"] = auto_id
 
         existing.append(config)
-        with open(automations_path, "w") as f:
-            yaml_lib.dump(existing, f, default_flow_style=False)
 
+        def _write_automations(data: list) -> None:
+            with open(automations_path, "w") as f:
+                yaml_lib.dump(data, f, default_flow_style=False)
+
+        await hass.async_add_executor_job(_write_automations, existing)
         await hass.services.async_call("automation", "reload", {}, blocking=True)
         return {"applied": True, "automation_id": auto_id}
 
@@ -441,54 +448,64 @@ async def _execute_change(
         automation_id = payload.get("automation_id", "")
         config = payload.get("config", {})
         automations_path = hass.config.path("automations.yaml")
-        try:
-            with open(automations_path) as f:
-                existing = yaml_lib.safe_load(f) or []
-        except (FileNotFoundError, yaml_lib.YAMLError):
-            existing = []
-        if not isinstance(existing, list):
-            existing = [existing] if existing else []
 
-        entity_id = f"automation.{automation_id}" if not automation_id.startswith("automation.") else automation_id
-        for i, auto in enumerate(existing):
-            if isinstance(auto, dict) and (
-                auto.get("id") == automation_id
-                or auto.get("alias") == automation_id
-            ):
-                existing[i] = {**auto, **config}
-                break
-        else:
-            existing.append(config)
+        def _read_and_update() -> tuple[list, str]:
+            try:
+                with open(automations_path) as f:
+                    existing = yaml_lib.safe_load(f) or []
+            except (FileNotFoundError, yaml_lib.YAMLError):
+                existing = []
+            if not isinstance(existing, list):
+                existing = [existing] if existing else []
 
-        with open(automations_path, "w") as f:
-            yaml_lib.dump(existing, f, default_flow_style=False)
+            entity_id = f"automation.{automation_id}" if not automation_id.startswith("automation.") else automation_id
+            for i, auto in enumerate(existing):
+                if isinstance(auto, dict) and (
+                    auto.get("id") == automation_id
+                    or auto.get("alias") == automation_id
+                ):
+                    existing[i] = {**auto, **config}
+                    break
+            else:
+                existing.append(config)
 
+            with open(automations_path, "w") as f:
+                yaml_lib.dump(existing, f, default_flow_style=False)
+
+            return existing, entity_id
+
+        _, entity_id = await hass.async_add_executor_job(_read_and_update)
         await hass.services.async_call("automation", "reload", {}, blocking=True)
         return {"applied": True, "automation_id": automation_id}
 
     if kind == "automation_delete":
         automation_id = payload.get("automation_id", "")
         automations_path = hass.config.path("automations.yaml")
-        try:
-            with open(automations_path) as f:
-                existing = yaml_lib.safe_load(f) or []
-        except (FileNotFoundError, yaml_lib.YAMLError):
-            existing = []
-        if not isinstance(existing, list):
-            existing = [existing] if existing else []
 
-        remaining = [
-            a
-            for a in existing
-            if not (
-                a.get("id") == automation_id
-                or a.get("alias") == automation_id
-            )
-        ]
+        def _read_and_delete() -> list:
+            try:
+                with open(automations_path) as f:
+                    existing = yaml_lib.safe_load(f) or []
+            except (FileNotFoundError, yaml_lib.YAMLError):
+                existing = []
+            if not isinstance(existing, list):
+                existing = [existing] if existing else []
 
-        with open(automations_path, "w") as f:
-            yaml_lib.dump(remaining, f, default_flow_style=False)
+            remaining = [
+                a
+                for a in existing
+                if not (
+                    a.get("id") == automation_id
+                    or a.get("alias") == automation_id
+                )
+            ]
 
+            with open(automations_path, "w") as f:
+                yaml_lib.dump(remaining, f, default_flow_style=False)
+
+            return remaining
+
+        await hass.async_add_executor_job(_read_and_delete)
         await hass.services.async_call("automation", "reload", {}, blocking=True)
         return {"applied": True, "automation_id": automation_id}
 
