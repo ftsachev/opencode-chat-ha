@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from typing import Any, Callable, Awaitable
 from urllib.request import Request, urlopen
@@ -13,6 +14,12 @@ from .storage import Message, SessionStore
 from .tools import TOOL_DEFINITIONS, ToolRegistry, _validate_propose_config
 
 _LOGGER = logging.getLogger(__name__)
+
+# Matches a fenced ```action ... ``` block. Shared (compiled once) by
+# _parse_tool_calls (which reads group(1), the JSON body), and by
+# _remove_tool_call_blocks / _sanitize_tool_result (which just replace the
+# whole match).
+_ACTION_BLOCK_RE = re.compile(r"```action\s*\n(.*?)\n```", re.DOTALL)
 
 SYSTEM_PROMPT = """You are an in-house assistant inside a Home Assistant installation.
 
@@ -83,10 +90,8 @@ TOOL_DESCRIPTIONS = _build_tool_descriptions()
 
 def _parse_tool_calls(text: str) -> list[dict[str, Any]]:
     """Parse ```action fenced blocks from LLM response text as tool calls."""
-    import re
-    BLOCK_RE = re.compile(r"```action\s*\n(.*?)\n```", re.DOTALL)
     calls = []
-    for match in BLOCK_RE.finditer(text):
+    for match in _ACTION_BLOCK_RE.finditer(text):
         try:
             parsed = json.loads(match.group(1).strip())
             if isinstance(parsed, dict):
@@ -362,14 +367,17 @@ class OpenCodeClient:
 
                 await emit({"type": "tool_use_start", "id": tc_id, "name": tc_name})
                 result = await self._tools.call(tc_name, tc_args, session_id, tc_id)
-                # Sanitize tool result to prevent action block injection
-                if isinstance(result, dict) and "text" in result:
-                    result["text"] = _sanitize_tool_result(result["text"])
-                elif isinstance(result, str):
-                    result = _sanitize_tool_result(result)
                 await emit({"type": "tool_result", "id": tc_id, "name": tc_name, "result": result})
                 assistant_blocks.append({"type": "tool_use", "id": tc_id, "name": tc_name, "input": tc_args})
+                # Sanitize the serialized result text -- the text that
+                # actually enters the prompt -- so a forged ```action block
+                # nested anywhere inside the result (e.g. an entity's
+                # friendly_name) cannot be re-parsed as a real tool call on a
+                # later turn. Applying this to the dict/str result itself
+                # (the old approach) never ran in practice: no tool returns a
+                # top-level "text" key or a bare string.
                 result_text = json.dumps(result, default=str)[:2000]
+                result_text = _sanitize_tool_result(result_text)
                 clean_text += f"\n  [Called tool: {tc_name} with args {json.dumps(tc_args)}]"
                 api_messages.append({"role": "assistant", "content": f"  [Tool result for {tc_name}]: {result_text}"})
 
@@ -427,16 +435,12 @@ def _history_to_text(history: list[Message]) -> list[dict[str, str]]:
 
 def _remove_tool_call_blocks(text: str) -> str:
     """Remove ```action fenced blocks from text."""
-    import re
-    BLOCK_RE = re.compile(r"```action\s*\n.*?\n```", re.DOTALL)
-    return BLOCK_RE.sub("", text).strip()
+    return _ACTION_BLOCK_RE.sub("", text).strip()
 
 
 def _sanitize_tool_result(text: str) -> str:
     """Strip any ```action blocks from tool results to prevent injection."""
-    import re
-    BLOCK_RE = re.compile(r"```action\s*\n.*?\n```", re.DOTALL)
-    return BLOCK_RE.sub("[action block removed]", text)
+    return _ACTION_BLOCK_RE.sub("[action block removed]", text)
 
 
 def _insert_turn_assistant_text(
