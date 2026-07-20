@@ -8,7 +8,6 @@ class OpenCodeChatPanel extends HTMLElement {
     this._streaming = false;
     this._msgId = 0;
     this._pendingSubscriptions = {};
-    this._markedReady = false;
     this.attachShadow({ mode: 'open' });
   }
 
@@ -18,23 +17,6 @@ class OpenCodeChatPanel extends HTMLElement {
       this._initialized = true;
       this._render();
       this._loadSessions();
-    }
-  }
-
-  async _loadMarked() {
-    if (window.marked) { this._markedReady = true; return; }
-    try {
-      const script = document.createElement('script');
-      script.src = '/opencode_chat_static/marked.min.js';
-      script.onload = () => { this._markedReady = true; };
-      script.onerror = () => { this._markedReady = false; };
-      document.head.appendChild(script);
-      await new Promise((resolve) => {
-        const check = () => { if (this._markedReady !== undefined) resolve(); else setTimeout(check, 50); };
-        check();
-      });
-    } catch {
-      this._markedReady = false;
     }
   }
 
@@ -502,11 +484,6 @@ class OpenCodeChatPanel extends HTMLElement {
 
   _renderMarkdown(text) {
     if (!text) return '';
-    if (this._markedReady) {
-      try {
-        return window.marked.parse(text, { breaks: true, gfm: true });
-      } catch { }
-    }
     return this._simpleMarkdown(text);
   }
 
