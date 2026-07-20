@@ -336,6 +336,11 @@ class OpenCodeClient:
                 new_messages.append(assistant_msg_obj)
                 break
 
+            # Track how many entries this turn actually appends to
+            # api_messages: the dedupe branch below `continue`s without
+            # appending, so that count is not always len(tool_calls).
+            turn_start_len = len(api_messages)
+
             for tc in tool_calls:
                 tc_name = tc.get("name", "")
                 tc_args = tc.get("arguments", {})
@@ -368,10 +373,12 @@ class OpenCodeClient:
                 clean_text += f"\n  [Called tool: {tc_name} with args {json.dumps(tc_args)}]"
                 api_messages.append({"role": "assistant", "content": f"  [Tool result for {tc_name}]: {result_text}"})
 
-            api_messages.insert(
-                -len(tool_calls),
-                {"role": "assistant", "content": clean_text},
-            )
+            # Insert the assistant's text immediately before the entries this
+            # turn appended (tool errors/results), preserving all pre-existing
+            # history. Using the actual appended count (not len(tool_calls))
+            # keeps ordering correct even when calls were deduped/skipped.
+            appended_count = len(api_messages) - turn_start_len
+            _insert_turn_assistant_text(api_messages, appended_count, clean_text)
 
             assistant_msg_obj = Message(role="assistant", content=assistant_blocks)
             new_messages.append(assistant_msg_obj)
@@ -430,6 +437,25 @@ def _sanitize_tool_result(text: str) -> str:
     import re
     BLOCK_RE = re.compile(r"```action\s*\n.*?\n```", re.DOTALL)
     return BLOCK_RE.sub("[action block removed]", text)
+
+
+def _insert_turn_assistant_text(
+    api_messages: list[dict[str, str]], appended_count: int, clean_text: str
+) -> None:
+    """Insert this turn's assistant text right before its own tool results.
+
+    `appended_count` is how many entries this turn's tool-call loop actually
+    appended to `api_messages` (the dedupe branch skips a call without
+    appending, so it can be less than len(tool_calls)). Inserting at
+    `-appended_count` keeps all pre-existing history in place and puts
+    `clean_text` immediately before the first tool-result entry from this
+    turn. When nothing was appended (e.g. every call was deduped), just
+    append.
+    """
+    if appended_count > 0:
+        api_messages.insert(-appended_count, {"role": "assistant", "content": clean_text})
+    else:
+        api_messages.append({"role": "assistant", "content": clean_text})
 
 
 def _validate_tool_call(name: str, args: dict[str, Any]) -> str | None:
