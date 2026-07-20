@@ -262,8 +262,8 @@ class OpenCodeClient:
     ) -> tuple[list[Message], str]:
         """Run a tool-use loop, using OpenCode as the LLM backend.
 
-        Uses the polling-based /message API. Returns a tuple of
-        (new_messages, opencode_session_id).
+        Uses the send-and-wait /message API (POST /session/{id}/message).
+        Returns a tuple of (new_messages, opencode_session_id).
         """
         active_agent = agent or self._default_agent
         new_messages: list[Message] = []
@@ -290,21 +290,36 @@ class OpenCodeClient:
             full_prompt += "assistant:"
 
             _LOGGER.debug("Sending prompt turn %d to session %s", turn, opencode_sid)
-            await loop.run_in_executor(
+            # POST /session/{id}/message is a send-and-wait endpoint: OpenCode
+            # blocks server-side until the assistant has replied and returns
+            # the result directly in the response body, so there is no
+            # separate response to poll for afterwards.
+            send_resp = await loop.run_in_executor(
                 None, lambda: self.send_prompt(opencode_sid, full_prompt)
             )
 
-            assistant_msg = await loop.run_in_executor(
-                None, lambda: self._poll_final_response(opencode_sid)
+            # The response may be the assistant message directly, or wrapped
+            # in a {"data": ...} envelope like other endpoints (see
+            # create_session / list_sessions above).
+            payload = (
+                send_resp.get("data", send_resp)
+                if isinstance(send_resp, dict)
+                else send_resp
             )
+            if isinstance(payload, list):
+                assistant_messages = payload
+            elif isinstance(payload, dict):
+                assistant_messages = [payload]
+            else:
+                assistant_messages = []
 
-            if not assistant_msg:
+            text_content = _extract_text_from_assistant(assistant_messages) or ""
+
+            if not text_content:
                 await emit({"type": "error", "error": "No response from AI"})
                 break
 
-            text_content = _extract_text_from_assistant([assistant_msg]) or ""
-            if text_content:
-                await emit({"type": "text_delta", "text": text_content})
+            await emit({"type": "text_delta", "text": text_content})
 
             tool_calls = _parse_tool_calls(text_content)
             clean_text = _remove_tool_call_blocks(text_content)
