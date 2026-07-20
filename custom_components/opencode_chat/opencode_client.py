@@ -287,12 +287,31 @@ class OpenCodeClient:
             system_text += f"\n\n[Session state]\n{state_block}\n"
 
         api_messages = _history_to_text(history)
+        # How much of api_messages has already been sent to the OpenCode
+        # session (as opposed to just tracked locally for our own
+        # bookkeeping / ordering).
+        last_sent_len = 0
 
         for turn in range(MAX_TURNS_PER_REQUEST):
-            full_prompt = system_text + "\n\n"
-            for msg in api_messages:
-                full_prompt += f"{msg['role']}: {msg['content']}\n\n"
+            if turn == 0:
+                # First turn of this request: send the system prompt/tool
+                # descriptions plus all prior conversation history.
+                full_prompt = system_text + "\n\n"
+                for msg in api_messages:
+                    full_prompt += f"{msg['role']}: {msg['content']}\n\n"
+            else:
+                # The OpenCode session is stateful and already retains
+                # everything sent on earlier turns (including its own
+                # replies), so only forward what's new since the previous
+                # turn -- the tool results (and any tool errors / assistant
+                # follow-up text) appended during the previous iteration --
+                # instead of re-sending the whole conversation again. Without
+                # this, cost grows ~quadratically with MAX_TURNS_PER_REQUEST.
+                full_prompt = ""
+                for msg in api_messages[last_sent_len:]:
+                    full_prompt += f"{msg['role']}: {msg['content']}\n\n"
             full_prompt += "assistant:"
+            last_sent_len = len(api_messages)
 
             _LOGGER.debug("Sending prompt turn %d to session %s", turn, opencode_sid)
             # POST /session/{id}/message is a send-and-wait endpoint: OpenCode
