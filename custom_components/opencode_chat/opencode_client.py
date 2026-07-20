@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 import uuid
 from typing import Any, Callable, Awaitable
 from urllib.request import Request, urlopen
@@ -186,69 +185,43 @@ class OpenCodeClient:
         raise last_error  # should not reach, but satisfies type checker
 
     def health(self) -> dict:
-        return self._request("GET", "/api/health")
+        return self._request("GET", "/global/health")
 
     def create_session(self) -> dict:
-        resp = self._request("POST", "/api/session", {"title": "HA Chat"})
+        resp = self._request("POST", "/session", {"title": "HA Chat"})
         if isinstance(resp, dict) and "data" in resp:
             return resp["data"]
         return resp
 
     def list_sessions(self) -> list:
-        resp = self._request("GET", "/api/session")
+        resp = self._request("GET", "/session")
         if isinstance(resp, dict) and "data" in resp:
             return resp["data"]
         return resp if isinstance(resp, list) else []
 
     def delete_session(self, session_id: str) -> bool:
         try:
-            self._request("DELETE", f"/api/session/{session_id}")
+            self._request("DELETE", f"/session/{session_id}")
             return True
         except Exception:
             return False
 
     def send_prompt(self, session_id: str, text: str) -> dict:
+        """Send a prompt and wait for the response (synchronous)."""
         return self._request(
             "POST",
-            f"/api/session/{session_id}/prompt",
-            {"prompt": {"text": text}},
-            timeout=30,
+            f"/session/{session_id}/message",
+            {"message": text},
+            timeout=120,
         )
 
     def get_messages(self, session_id: str, limit: int = 50) -> list:
         resp = self._request(
-            "GET", f"/api/session/{session_id}/message?limit={limit}"
+            "GET", f"/session/{session_id}/message?limit={limit}"
         )
         if isinstance(resp, dict) and "data" in resp:
             return resp["data"]
         return resp if isinstance(resp, list) else []
-
-    def _poll_final_response(
-        self, session_id: str, poll_interval: float = 1.0, max_wait: float = 120.0
-    ) -> dict | None:
-        """Poll until messages stabilize, then return the latest assistant message.
-        Waits for the AI to finish all tool executions before returning.
-        Messages are newest-first; latest assistant message is msgs[0] if type matches."""
-        deadline = time.monotonic() + max_wait
-        stable_for = 0.0
-        last_count = len(self.get_messages(session_id))
-
-        while time.monotonic() < deadline:
-            time.sleep(poll_interval)
-            msgs = self.get_messages(session_id)
-            cur = len(msgs)
-            if cur == last_count:
-                stable_for += poll_interval
-                # 3s stability: message count unchanged = AI done generating/executing
-                if stable_for >= 3.0:
-                    for m in msgs:
-                        if m.get("type") == "assistant":
-                            return m
-                    return None
-            else:
-                last_count = cur
-                stable_for = 0.0
-        return None
 
     async def summarize_title(self, user_text: str) -> str:
         """Quick call to title a chat session via a temp session."""
@@ -260,17 +233,13 @@ class OpenCodeClient:
                 return ""
 
             prompt_text = f"{TITLE_PROMPT}\n\n{user_text[:500]}"
-            await loop.run_in_executor(
+            resp = await loop.run_in_executor(
                 None, lambda: self.send_prompt(sess_id, prompt_text)
             )
 
-            resp_msg = await loop.run_in_executor(
-                None, lambda: self._poll_final_response(sess_id, max_wait=30.0)
-            )
-
             title = ""
-            if resp_msg:
-                text = _extract_text_from_assistant([resp_msg])
+            if resp:
+                text = _extract_text_from_assistant([resp]) if isinstance(resp, dict) else None
                 if text:
                     title = text.strip().strip("\"'.,!?")[:60]
 
