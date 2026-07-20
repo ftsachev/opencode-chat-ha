@@ -2,14 +2,17 @@
 
 A Home Assistant sidebar integration that connects to an [OpenCode](https://opencode.ai) server, giving you an AI chat panel with 20+ HA-aware tools for managing your smart home.
 
+**The approve-gate is the product.** Nothing reaches Home Assistant until a human reads a diff and clicks Apply. This is what distinguishes it from autonomous agent approaches.
+
 ## Features
 
+- **Human-in-the-Loop** — All changes stage for review before applying
 - **Sidebar Chat Panel** — Chat with OpenCode directly from the HA sidebar
-- **20+ HA Tools** — List entities, control devices, create automations, manage dashboards
+- **20+ HA Tools** — List entities, query dashboards, create automations, call services
 - **Diff-and-Approve** — Destructive changes show a diff before applying
+- **Safe-Apply Pipeline** — Backup, validate, and rollback on failure
 - **Streaming Responses** — Real-time text streaming via WebSocket
 - **Session Management** — Create, rename, pin, and delete chat sessions
-- **Image Support** — Upload images to conversations
 - **Dark Mode** — Automatic HA theme integration
 
 ## Requirements
@@ -34,6 +37,25 @@ A Home Assistant sidebar integration that connects to an [OpenCode](https://open
 2. Extract `custom_components/opencode_chat/` to your HA config directory
 3. Restart Home Assistant
 
+## Setting Up the OpenCode Server
+
+### Option A: magnusoverli/opencode Add-on (HA OS/Supervised only)
+
+1. Add the add-on repository to HA
+2. Install the OpenCode add-on
+3. **Enable the LAN server** in the add-on configuration (defaults to off)
+4. Note the URL (typically `http://<host-ip>:4096`)
+
+### Option B: External Host
+
+Run `opencode serve` on a machine accessible from your HA instance:
+
+```bash
+opencode serve --host 0.0.0.0 --port 4096
+```
+
+**Security warning:** Binding to `0.0.0.0` exposes an agent with filesystem and shell access to your LAN. A strong password and firewall rules are mandatory.
+
 ## Configuration
 
 1. Go to **Settings** → **Devices & Services** → **Add Integration**
@@ -52,19 +74,24 @@ After setup, a new **OpenCode Chat** panel appears in your sidebar. Click it to 
 
 ### Available Tools
 
-The integration provides 20+ tools for managing your home:
+The integration provides 20+ tools. All changes are staged for human review:
 
-| Tool | Description |
-|------|-------------|
-| `list_entities` | List and filter HA entities |
-| `get_entity` | Get entity details and state |
-| `call_service` | Call any HA service |
-| `create_automation` | Create new automations |
-| `update_automation` | Update existing automations |
-| `delete_automation` | Delete automations |
-| `update_dashboard` | Update dashboard configurations |
-| `update_dashboard_view` | Update specific dashboard views |
-| `upload_image` | Upload images to conversations |
+| Tool | Type | Description |
+|------|------|-------------|
+| `list_entities` | Read-only | List and filter HA entities |
+| `get_entity` | Read-only | Get entity details and state |
+| `list_areas` | Read-only | List HA areas |
+| `list_dashboards` | Read-only | List Lovelace dashboards |
+| `get_dashboard` | Read-only | Fetch dashboard config |
+| `get_dashboard_view` | Read-only | Fetch a single view |
+| `list_automations` | Read-only | List automations |
+| `list_services` | Read-only | List HA services |
+| `propose_dashboard_update` | Staged | Stage dashboard changes for review |
+| `propose_dashboard_view_update` | Staged | Stage view changes for review |
+| `propose_automation_create` | Staged | Stage new automation for review |
+| `propose_automation_update` | Staged | Stage automation edit for review |
+| `propose_automation_delete` | Staged | Stage automation deletion for review |
+| `propose_service_call` | Staged | Stage service call for review |
 
 ### Session Management
 
@@ -76,10 +103,14 @@ The integration provides 20+ tools for managing your home:
 ## Security
 
 - **Admin-only access**: All WebSocket API handlers require admin privileges
+- **Human approve-gate**: All changes stage for review before applying
+- **Safe-apply pipeline**: Backup, validate, and rollback on failure
 - Passwords stored in HA's encrypted config entry storage
 - Session IDs validated to prevent path traversal
 - Input validation on all tool parameters
-- Destructive changes require human approval via diff-and-apply gate
+- Action blocks sanitized in tool results to prevent injection
+
+**Note:** The `/opencode_chat_media` endpoint is served unauthenticated, protected only by random UUID filenames.
 
 ## Development
 
