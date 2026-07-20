@@ -75,10 +75,11 @@ The integration provides 20+ tools for managing your home:
 
 ## Security
 
-- Admin access required for panel access
+- **Admin-only access**: All WebSocket API handlers require admin privileges
 - Passwords stored in HA's encrypted config entry storage
 - Session IDs validated to prevent path traversal
 - Input validation on all tool parameters
+- Destructive changes require human approval via diff-and-apply gate
 
 ## Development
 

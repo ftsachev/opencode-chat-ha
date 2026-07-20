@@ -40,6 +40,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
 
 
 @websocket_api.websocket_command({vol.Required("type"): "opencode_chat/list_sessions"})
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_list_sessions(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -51,6 +52,7 @@ async def ws_list_sessions(
 @websocket_api.websocket_command(
     {vol.Required("type"): "opencode_chat/create_session"}
 )
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_create_session(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -76,6 +78,7 @@ async def ws_create_session(
         vol.Required("session_id"): str,
     }
 )
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_delete_session(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -94,6 +97,7 @@ async def ws_delete_session(
         vol.Required("title"): str,
     }
 )
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_rename_session(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -110,6 +114,7 @@ async def ws_rename_session(
         vol.Required("session_id"): str,
     }
 )
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_toggle_pin_session(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -125,6 +130,7 @@ async def ws_toggle_pin_session(
         vol.Required("session_id"): str,
     }
 )
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_get_session(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -175,6 +181,7 @@ async def _stream_to_connection(hass, connection, msg_id, events):
         vol.Required("message"): str,
     }
 )
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_chat(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -263,6 +270,7 @@ async def ws_chat(
         vol.Required("data"): str,
     }
 )
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_upload_image(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -279,6 +287,7 @@ async def ws_upload_image(
 @websocket_api.websocket_command(
     {vol.Required("type"): "opencode_chat/list_pending"}
 )
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_list_pending(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -294,6 +303,7 @@ async def ws_list_pending(
         vol.Required("change_id"): str,
     }
 )
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_apply_change(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -336,6 +346,7 @@ async def ws_apply_change(
         vol.Required("change_id"): str,
     }
 )
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_reject_change(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -350,6 +361,7 @@ async def ws_reject_change(
 @websocket_api.websocket_command(
     {vol.Required("type"): "opencode_chat/get_models"}
 )
+@websocket_api.require_admin
 @websocket_api.async_response
 async def ws_get_models(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
